@@ -69,7 +69,11 @@ export function NoteList({ refreshToken }: { refreshToken: number }) {
           Library
         </h2>
         <p className="meta">
-          {notes ? `${notes.length} recording${notes.length === 1 ? "" : "s"}` : "Loading"}
+          {error
+            ? "Unavailable"
+            : notes
+              ? `${notes.length} recording${notes.length === 1 ? "" : "s"}`
+              : "Loading"}
         </p>
       </div>
 
