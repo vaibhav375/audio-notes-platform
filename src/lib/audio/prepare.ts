@@ -28,12 +28,17 @@ const MAX_BITRATE_KBPS = 64;
 /**
  * Longest slice sent as a single file.
  *
- * Fifteen minutes at the full 64 kbps is about 7.2 MB, comfortably inside the
- * per-file cap. Splitting at this length means quality never has to be traded
- * away for length: a three hour recording is encoded at exactly the same
- * bitrate as a three minute one, just across more files.
+ * Sized by what the provider can actually fetch, not by what the 10 MB cap
+ * allows. The provider pulls each slice from blob storage itself, and its
+ * storage sits in a different region from ours — a job of four 5 MB slices was
+ * cancelled with a read timeout before any of them finished downloading.
+ *
+ * Five minutes at the full 64 kbps is about 2.4 MB, which fetches quickly
+ * enough to stay well inside that timeout. Quality is still never traded away
+ * for length: a three hour recording is encoded at exactly the same bitrate as
+ * a three minute one, just across more slices.
  */
-export const CHUNK_SECONDS = 15 * 60;
+export const CHUNK_SECONDS = 5 * 60;
 
 /** Guard against decoding something that will exhaust browser memory. */
 export const MAX_INPUT_BYTES = 150 * 1024 * 1024;

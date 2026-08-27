@@ -247,11 +247,19 @@ export default function ArchitecturePage() {
           ceiling the app advertised was not real.
         </p>
         <p className="doc__p">
-          Recordings are now <strong>split into fifteen-minute slices</strong>,
-          each encoded at the full 64 kbps — about 7.2 MB, comfortably inside the
-          cap — and submitted as a single multi-file batch job. Length no longer
-          costs quality: a three-hour recording is encoded at exactly the same
-          bitrate as a three-minute one, just across more files.
+          Recordings are now <strong>split into five-minute slices</strong>,
+          each encoded at the full 64 kbps and submitted as one multi-file batch
+          job. Length no longer costs quality: a three-hour recording is encoded
+          at exactly the same bitrate as a three-minute one, just across more
+          slices.
+        </p>
+        <p className="doc__p">
+          The slice length is set by what the provider can fetch, not by what the
+          10 MB cap allows. It pulls each slice from blob storage itself, and its
+          storage is in a different region from ours: a job of four 5 MB slices
+          was cancelled outright with a read timeout, before a single file had
+          finished downloading. Five minutes comes to about 2.4 MB, which arrives
+          comfortably inside that timeout.
         </p>
         <p className="doc__p">
           The provider returns a transcript per slice, with timings relative to
@@ -263,7 +271,7 @@ export default function ArchitecturePage() {
 
         <div className="figures">
           <Figure value="~1 min" label="of 44.1 kHz stereo WAV fits in 10 MB" muted />
-          <Figure value="15 min" label="per slice, always at full 64 kbps" />
+          <Figure value="5 min" label="per slice, always at full 64 kbps" />
           <Figure value="90 min" label="ceiling, now set by browser memory" muted />
         </div>
 
