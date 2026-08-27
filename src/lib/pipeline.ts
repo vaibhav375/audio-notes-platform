@@ -2,11 +2,14 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   notes,
+  type AudioPart,
+  type JobProgress,
   type Note,
   type Segment,
   type SliceJob,
 } from "@/lib/db/schema";
 import { env } from "@/lib/env";
+import { MAX_BATCH_FILES } from "@/lib/audio/prepare";
 import {
   createJob,
   downloadTranscript,
@@ -16,6 +19,7 @@ import {
   isTerminal,
   parseDuration,
   startJob,
+  transcribeSlice,
   type GnaniJobFile,
 } from "@/lib/gnani";
 import { LlmError, summariseTranscript } from "@/lib/llm";
@@ -83,6 +87,35 @@ async function fail(
   });
 }
 
+/**
+ * Switches a recording to the synchronous path.
+ *
+ * Nothing is transcribed here — the slices are transcribed a few at a time by
+ * the reconciler, so no single request has to carry a whole recording.
+ */
+async function beginSyncTranscription(
+  note: Note,
+  sliceCount: number,
+): Promise<Note> {
+  log.info("note.sync_transcription", { noteId: note.id, slices: sliceCount });
+  return patch(note.id, {
+    transcribeMode: "sync",
+    status: "transcribing",
+    jobs: null,
+    gnaniJobId: null,
+    gnaniStatus: null,
+    sliceTranscripts: new Array<string | null>(sliceCount).fill(null),
+    progress: {
+      totalFiles: sliceCount,
+      completedFiles: 0,
+      failedFiles: 0,
+      inProgressFiles: sliceCount,
+      queuedFiles: 0,
+    },
+    lastPolledAt: new Date(),
+  });
+}
+
 /** Every slice of a recording, in order. Falls back for pre-chunking rows. */
 function audioUrlsFor(note: Note): string[] {
   if (note.parts?.length) {
@@ -107,29 +140,34 @@ function callbackUrl(): string | null {
  * file was accepted by the ASR provider.
  */
 export async function beginTranscription(note: Note): Promise<Note> {
+  const urls = audioUrlsFor(note);
+
+  // Too many slices for one job, or the batch path is switched off: go straight
+  // to transcribing slice by slice.
+  if (
+    env.transcribeMode === "sync" ||
+    (env.transcribeMode === "auto" && urls.length > MAX_BATCH_FILES)
+  ) {
+    return beginSyncTranscription(note, urls.length);
+  }
+
   try {
-    const urls = audioUrlsFor(note);
     const jobs: SliceJob[] = [];
 
-    // One job per slice. The batch API advertises many files per job, but a
-    // two-file job is cancelled with a read timeout every time, whether the
-    // files are pulled from storage or posted directly. Single-file jobs are
-    // reliable, so that is the unit.
-    for (const [partIndex, url] of urls.entries()) {
-      const job = await createJob({
-        audioUrls: [url],
-        languageCode: note.languageCode,
-        callbackUrl: callbackUrl(),
-        diarize: note.diarize,
-      });
-      // A created job sits idle until it is explicitly started.
-      const started = await startJob(job.job_id);
-      jobs.push({
-        jobId: job.job_id,
-        partIndex,
-        status: started.status ?? job.status,
-      });
-    }
+    // Every slice in one job, which is what the batch API is for.
+    const job = await createJob({
+      audioUrls: urls,
+      languageCode: note.languageCode,
+      callbackUrl: callbackUrl(),
+      diarize: note.diarize,
+    });
+    // A created job sits idle until it is explicitly started.
+    const started = await startJob(job.job_id);
+    jobs.push({
+      jobId: job.job_id,
+      partIndex: 0,
+      status: started.status ?? job.status,
+    });
 
     log.info("note.jobs_started", {
       noteId: note.id,
@@ -140,19 +178,29 @@ export async function beginTranscription(note: Note): Promise<Note> {
 
     return patch(note.id, {
       jobs,
+      transcribeMode: "batch",
       gnaniJobId: jobs[0]?.jobId ?? null,
       gnaniStatus: jobs[0]?.status ?? null,
       status: "transcribing",
       progress: {
-        totalFiles: jobs.length,
+        totalFiles: urls.length,
         completedFiles: 0,
         failedFiles: 0,
-        inProgressFiles: jobs.length,
+        inProgressFiles: urls.length,
         queuedFiles: 0,
       },
       lastPolledAt: new Date(),
     });
   } catch (error) {
+    // Could not even submit the job: the synchronous path is a different code
+    // path on the provider's side and may well be healthy.
+    if (env.transcribeMode === "auto" && error instanceof GnaniError) {
+      log.warn("note.batch_submit_failed", {
+        noteId: note.id,
+        reason: error.message,
+      });
+      return beginSyncTranscription(note, urls.length);
+    }
     if (error instanceof GnaniError) {
       // Rate limiting during submission is worth waiting out, not failing on.
       if (
@@ -212,7 +260,10 @@ export async function reconcileNote(input: Note): Promise<Note> {
   }
 
   if (note.status === "transcribing") {
-    note = await pollTranscription(note);
+    note =
+      note.transcribeMode === "sync"
+        ? await advanceSyncTranscription(note)
+        : await pollTranscription(note);
     if (note.status !== "summarizing") return note;
   }
 
@@ -221,6 +272,124 @@ export async function reconcileNote(input: Note): Promise<Note> {
   }
 
   return note;
+}
+
+/** Slices transcribed per invocation, sized to finish well inside the timeout. */
+const SLICES_PER_PASS = 8;
+
+/**
+ * Transcribes the next few slices through the synchronous endpoint.
+ *
+ * Returns as soon as its budget is spent, having saved what it finished. The
+ * next poll picks up where this one stopped, so a recording of any length is
+ * transcribed across as many requests as it needs and progress is real
+ * throughout rather than jumping from nothing to everything.
+ */
+async function advanceSyncTranscription(note: Note): Promise<Note> {
+  const parts: AudioPart[] = note.parts?.length
+    ? [...note.parts].sort((a, b) => a.offsetSeconds - b.offsetSeconds)
+    : [
+        {
+          url: note.audioUrl,
+          pathname: note.audioPathname,
+          bytes: note.uploadedBytes,
+          offsetSeconds: 0,
+          durationSeconds: note.durationSeconds ?? 0,
+        },
+      ];
+
+  const results = [...(note.sliceTranscripts ?? new Array(parts.length).fill(null))];
+
+  let done = 0;
+  for (let index = 0; index < parts.length && done < SLICES_PER_PASS; index += 1) {
+    if (results[index] !== null) continue;
+    done += 1;
+
+    try {
+      const { transcript } = await transcribeSlice(parts[index].url, note.languageCode);
+      results[index] = transcript;
+    } catch (error) {
+      if (error instanceof GnaniError && error.retryable) {
+        // Save what did finish and let the next poll resume from here.
+        return patch(note.id, {
+          sliceTranscripts: results,
+          progress: sliceProgress(results),
+          lastPolledAt: new Date(),
+        });
+      }
+      return fail(
+        note.id,
+        "transcription",
+        error instanceof GnaniError
+          ? describeGnaniError(error)
+          : "Could not transcribe part of this recording.",
+      );
+    }
+  }
+
+  const remaining = results.some((entry) => entry === null);
+  if (remaining) {
+    return patch(note.id, {
+      sliceTranscripts: results,
+      progress: sliceProgress(results),
+      lastPolledAt: new Date(),
+    });
+  }
+
+  // Every slice is in. Assemble the recording, timings and all.
+  const stitched = stitch(
+    results.map((text, index) => ({
+      full_transcript: text ?? "",
+      // The synchronous endpoint returns text only, so each slice becomes one
+      // segment spanning its own span of the recording.
+      segments: text?.trim()
+        ? [
+            {
+              segment_id: index,
+              start_time: 0,
+              end_time: parts[index].durationSeconds,
+              text: text.trim(),
+            },
+          ]
+        : [],
+    })),
+    parts.map((part) => part.offsetSeconds),
+  );
+
+  log.info("note.transcribed", {
+    noteId: note.id,
+    mode: "sync",
+    slices: parts.length,
+    characters: stitched.transcript.length,
+  });
+
+  const [claimed] = await db()
+    .update(notes)
+    .set({
+      status: "summarizing",
+      transcript: stitched.transcript,
+      segments: stitched.segments.length > 0 ? stitched.segments : null,
+      sliceTranscripts: results,
+      progress: sliceProgress(results),
+      errorMessage: null,
+      failureStage: null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(notes.id, note.id), eq(notes.status, "transcribing")))
+    .returning();
+
+  return claimed ?? (await getNote(note.id)) ?? note;
+}
+
+function sliceProgress(results: (string | null)[]): JobProgress {
+  const completed = results.filter((entry) => entry !== null).length;
+  return {
+    totalFiles: results.length,
+    completedFiles: completed,
+    failedFiles: 0,
+    inProgressFiles: results.length - completed,
+    queuedFiles: 0,
+  };
 }
 
 async function pollTranscription(note: Note): Promise<Note> {
@@ -282,13 +451,24 @@ async function pollTranscription(note: Note): Promise<Note> {
     const reason =
       first.error_message ?? first.cancel_reason ?? first.message ?? null;
 
-    // A start failure is usually the provider rate limiting or briefly unwell,
-    // not a bad file. Resubmit rather than telling the user their audio is
-    // corrupt, which is both wrong and unactionable.
+    // A start failure says nothing about the audio — it is what this API
+    // returns when the batch pipeline is unwell. Telling the user their file is
+    // corrupt would be both wrong and unactionable.
+    const transient = first.status === "START_FAILED" && looksTransient(reason);
+
+    // The synchronous endpoint is a separate code path on the provider's side
+    // and is often healthy when the batch pipeline is not. Hand over to it
+    // rather than retrying a route that has already failed.
+    if (transient && env.transcribeMode === "auto") {
+      log.warn("note.batch_failed_falling_back", {
+        noteId: note.id,
+        reason: reason ?? "unknown",
+      });
+      return beginSyncTranscription(note, audioUrlsFor(note).length);
+    }
+
     const retryable =
-      first.status === "START_FAILED" &&
-      looksTransient(reason) &&
-      note.transcriptionAttempts < MAX_TRANSCRIPTION_ATTEMPTS;
+      transient && note.transcriptionAttempts < MAX_TRANSCRIPTION_ATTEMPTS;
 
     if (retryable) {
       const since = note.lastPolledAt

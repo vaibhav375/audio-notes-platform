@@ -109,8 +109,16 @@ export const notes = pgTable(
     // Pipeline state.
     status: text("status").$type<NoteStatus>().notNull().default("uploaded"),
     gnaniJobId: text("gnani_job_id"),
-    /** Every provider job for this recording, one per slice, in order. */
+    /** Every provider job for this recording, in order. Batch path only. */
     jobs: jsonb("jobs").$type<SliceJob[]>(),
+    /** Which transcription path this recording is using. */
+    transcribeMode: text("transcribe_mode").$type<"batch" | "sync">(),
+    /**
+     * Per-slice text from the synchronous path, filled in as slices complete.
+     * Transcribing a long recording takes more time than one request may run
+     * for, so progress is persisted rather than held in memory.
+     */
+    sliceTranscripts: jsonb("slice_transcripts").$type<(string | null)[]>(),
     gnaniFileId: text("gnani_file_id"),
     gnaniStatus: text("gnani_status"),
     progress: jsonb("progress").$type<JobProgress>(),

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { CHUNK_SECONDS, chooseBitrate, planChunks } from "@/lib/audio/prepare";
+import {
+  CHUNK_SECONDS,
+  MAX_BATCH_FILES,
+  chooseBitrate,
+  planChunks,
+} from "@/lib/audio/prepare";
 import { stitch } from "@/lib/pipeline";
 import { GNANI_MAX_FILE_BYTES } from "@/lib/constants";
 
@@ -8,8 +13,17 @@ function encodedBytes(seconds: number, kbps: number): number {
 }
 
 describe("chunk planning", () => {
-  it("leaves a short recording as a single slice", () => {
-    expect(planChunks(120)).toEqual([{ start: 0, end: 120 }]);
+  it("leaves a recording shorter than one slice alone", () => {
+    expect(planChunks(20)).toEqual([{ start: 0, end: 20 }]);
+  });
+
+  it("keeps every slice inside the synchronous endpoint's real 30s limit", () => {
+    // The documented limit is 60 seconds; the API rejects anything over 30.
+    for (const duration of [26, 120, 300, 3600]) {
+      for (const chunk of planChunks(duration)) {
+        expect(chunk.end - chunk.start).toBeLessThanOrEqual(30);
+      }
+    }
   });
 
   it("splits once the recording exceeds the slice length", () => {
@@ -46,8 +60,12 @@ describe("chunk planning", () => {
     }
   });
 
-  it("stays within the 100 files a single job accepts, for any sane recording", () => {
-    expect(planChunks(8 * 3600).length).toBeLessThanOrEqual(100);
+  it("marks where a recording outgrows a single batch job", () => {
+    // A batch job takes at most 100 files, so at this slice length the batch
+    // path tops out around forty minutes. Longer recordings must go through the
+    // synchronous path, which has no file-count ceiling.
+    expect(planChunks(40 * 60).length).toBeLessThanOrEqual(MAX_BATCH_FILES);
+    expect(planChunks(60 * 60).length).toBeGreaterThan(MAX_BATCH_FILES);
   });
 });
 

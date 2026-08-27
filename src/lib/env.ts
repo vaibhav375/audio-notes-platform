@@ -65,6 +65,18 @@ export const env = {
     return process.env.LLM_MODEL ?? "qwen/qwen3.8-27b";
   },
 
+  /**
+   * Which transcription path to use.
+   *
+   * "auto" tries the batch job API and falls back to the synchronous endpoint
+   * when a job cannot be started. "batch" and "sync" pin one path, which is
+   * useful while one of them is known to be unwell.
+   */
+  get transcribeMode(): "auto" | "batch" | "sync" {
+    const value = process.env.TRANSCRIBE_MODE;
+    return value === "batch" || value === "sync" ? value : "auto";
+  },
+
   get repoUrl() {
     return (
       process.env.NEXT_PUBLIC_REPO_URL ??

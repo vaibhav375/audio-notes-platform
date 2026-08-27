@@ -28,23 +28,27 @@ const MAX_BITRATE_KBPS = 64;
 /**
  * Longest slice sent as a single file.
  *
- * Sized by what the provider can actually fetch, not by what the 10 MB cap
- * allows. The provider pulls each slice from blob storage itself, and its
- * storage sits in a different region from ours — a job of four 5 MB slices was
- * cancelled with a read timeout before any of them finished downloading.
+ * Set by the synchronous endpoint's real limit. The documentation says audio
+ * must be under sixty seconds; the API actually rejects anything over thirty
+ * ("MAX_AUDIO_DURATION_EXCEEDED: maximum allowed duration of 30 seconds").
+ * Twenty-five leaves margin for the small differences between a decoder's idea
+ * of a file's length and the provider's.
  *
- * Five minutes at the full 64 kbps is about 2.4 MB, which fetches quickly
- * enough to stay well inside that timeout. Quality is still never traded away
- * for length: a three hour recording is encoded at exactly the same bitrate as
- * a three minute one, just across more slices.
+ * Slicing this finely serves both transcription paths: the batch API takes the
+ * slices as one multi-file job, and the synchronous endpoint takes them one at
+ * a time. Quality is never traded away for length either way — every slice is
+ * encoded at the full 64 kbps regardless of how long the recording is.
  */
-export const CHUNK_SECONDS = 5 * 60;
+export const CHUNK_SECONDS = 25;
 
 /** Guard against decoding something that will exhaust browser memory. */
 export const MAX_INPUT_BYTES = 150 * 1024 * 1024;
 
 /** The assignment targets 2+ minute recordings; this is the practical ceiling. */
 export const MAX_DURATION_SECONDS = 90 * 60;
+
+/** Most slices a single batch job accepts. Longer recordings use the sync path. */
+export const MAX_BATCH_FILES = 100;
 
 export class AudioPrepareError extends Error {
   readonly hint: string | null;

@@ -288,3 +288,66 @@ export async function downloadTranscript(
   }
   return (await response.json()) as GnaniTranscript;
 }
+
+/**
+ * Transcribes one slice through the synchronous endpoint.
+ *
+ * This is the fallback for when the batch job API is unavailable. On its own it
+ * could never satisfy a two-minute requirement — the API rejects anything over
+ * thirty seconds, despite the documentation saying sixty — but the recording is
+ * already cut into slices below that limit, so the same stitching that serves
+ * the batch path serves this one.
+ */
+export async function transcribeSlice(
+  audioUrl: string,
+  languageCode: string,
+): Promise<{ transcript: string }> {
+  const source = await fetchWithRetry(audioUrl, {
+    method: "GET",
+    timeoutMs: 20_000,
+    cache: "no-store",
+  });
+
+  if (!source.ok) {
+    throw new GnaniError(
+      `Could not read the audio slice from storage (HTTP ${source.status}).`,
+      source.status,
+    );
+  }
+
+  const audio = await source.blob();
+  const form = new FormData();
+  form.append("audio_file", audio, "slice.mp3");
+  form.append("language_code", languageCode);
+
+  const response = await fetchWithRetry(`${env.gnaniBaseUrl}/stt/v3`, {
+    method: "POST",
+    timeoutMs: 45_000,
+    headers: { "X-API-Key-ID": env.gnaniApiKey },
+    body: form,
+  });
+
+  const text = await response.text();
+  let body: Record<string, unknown> = {};
+  try {
+    body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  } catch {
+    // Fall through to the error below with the raw excerpt.
+  }
+
+  if (!response.ok || body.success === false) {
+    const error = (body.error ?? {}) as Record<string, unknown>;
+    const message =
+      (typeof error.message === "string" && error.message) ||
+      (typeof body.message === "string" && body.message) ||
+      text.slice(0, 200) ||
+      `Gnani returned ${response.status}`;
+    throw new GnaniError(
+      message,
+      response.status,
+      typeof error.type === "string" ? error.type : null,
+    );
+  }
+
+  return { transcript: typeof body.transcript === "string" ? body.transcript : "" };
+}
