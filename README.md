@@ -24,6 +24,9 @@ be reopened at any time.
   excerpts. Works in Devanagari as well as Latin scripts.
 - **Exports** — timestamped text, Markdown, and SRT/WebVTT subtitles built from
   the real segment timings.
+- **Nine Indian languages**, all verified against the live API: Hindi, Kannada,
+  Tamil, Telugu, Malayalam, Marathi, Bengali, Gujarati and Indian English.
+  Transcripts keep their own script; summaries come back in English.
 - **Optional two-speaker separation** for interviews and support calls, with
   labels you can correct when the provider gets them wrong.
 - **Long recordings are split into slices** and submitted as one multi-file job,
