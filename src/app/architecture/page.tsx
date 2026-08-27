@@ -121,6 +121,16 @@ const IMPROVEMENTS: { title: string; body: string }[] = [
       "Audio objects are never deleted today. A scheduled job dropping blobs past a retention window — keeping the transcript and summary, which are what people come back for — would bound storage cost.",
   },
   {
+    title: "Speaker labels worth trusting",
+    body:
+      "Diarization is the provider's, capped at two speakers, and it misattributes turns on hard audio. Letting a listener correct a label, and having that correction stick across the rest of the recording, would make it dependable enough to lean on.",
+  },
+  {
+    title: "Search that spans a transcript's structure",
+    body:
+      "Full-text search finds the recording but drops you at the top of it. Matching at segment level instead would let a hit link straight to the second where the phrase was spoken, which is the obvious next step now that the timings are stored.",
+  },
+  {
     title: "Tests and observability",
     body:
       "The pipeline's state machine is the part most worth testing, with the Gnani client faked at the HTTP boundary. Structured logs keyed by note id, plus alerting on the failed-note rate, would replace reading the database to find out what broke.",
@@ -263,9 +273,89 @@ export default function ArchitecturePage() {
         </p>
       </section>
 
+
+      <section className="doc__section" aria-labelledby="segments">
+        <h2 id="segments" className="doc__h2">
+          <span className="doc__num">04</span> What the timings make possible
+        </h2>
+        <p className="doc__p">
+          Gnani returns a transcript twice over: once as flat text, and once as
+          an array of segments carrying <code>start_time</code>,{" "}
+          <code>end_time</code>, <code>text</code> and <code>speaker_id</code>.
+          Storing only the flat text would have been the easy call and would
+          have thrown away the more useful half.
+        </p>
+        <ul className="doc__list">
+          <li>
+            <strong>The transcript is navigable.</strong> Every line is a seek
+            target, and the line being spoken highlights as the audio plays.
+            Reopening a recording is then about checking a claim against the
+            audio, not re-reading a wall of text.
+          </li>
+          <li>
+            <strong>Subtitles come free.</strong> SRT and WebVTT are generated
+            from the real timings, not estimated from word counts. They are
+            offered only on recordings that actually have segments.
+          </li>
+          <li>
+            <strong>Two speakers can be separated</strong> when the upload asks
+            for it, which is the shape of an interview or a support call.
+          </li>
+        </ul>
+
+        <h3 className="doc__h3">Search across everything</h3>
+        <p className="doc__p">
+          A list ordered by date cannot answer &ldquo;which recording mentioned
+          the refund policy?&rdquo;, which is the question that makes keeping
+          transcripts worthwhile. Search runs on Postgres full text with a GIN
+          index over transcript, summary and filename.
+        </p>
+        <p className="doc__p">
+          It uses the <code>simple</code> text-search configuration rather than{" "}
+          <code>english</code>. That is deliberate: this app transcribes nine
+          Indian languages, and an English stemmer would mangle Devanagari and
+          every other non-Latin script. <code>simple</code> lowercases and
+          splits on word boundaries, which behaves the same in every language
+          here.
+        </p>
+        <p className="doc__p">
+          One sharp edge worth naming: <code>ts_headline</code> does{" "}
+          <em>not</em> escape the document it highlights. Emitting its output as
+          HTML would let any transcript or model-written summary inject markup
+          into the page, so matches are wrapped in non-HTML sentinels and turned
+          into elements on the client instead.
+        </p>
+
+        <h3 className="doc__h3">What the API does not give you</h3>
+        <p className="doc__p">
+          Two features looked obvious from the response shape and turned out not
+          to exist, which is worth recording so nobody rebuilds them on a wrong
+          assumption:
+        </p>
+        <ul className="doc__list">
+          <li>
+            <strong>Sentiment and emotion</strong> are present as segment fields
+            and come back <code>null</code> on every request from this model. No
+            sentiment timeline is possible without a separate classifier.
+          </li>
+          <li>
+            <strong><code>mode: &quot;translate&quot;</code> is a no-op</strong>{" "}
+            here — a Hindi recording put through it returns the same Devanagari
+            transcript, not English. Cross-language reading would need a
+            translation step of its own.
+          </li>
+          <li>
+            <strong>Diarization accuracy varies.</strong> On a two-voice test
+            call it returned both speakers but misattributed several turns, so
+            it is opt-in rather than always on, and presented as the provider&apos;s
+            best guess rather than ground truth.
+          </li>
+        </ul>
+      </section>
+
       <section className="doc__section" aria-labelledby="sync">
         <h2 id="sync" className="doc__h2">
-          <span className="doc__num">04</span> Synchronous versus background
+          <span className="doc__num">05</span> Synchronous versus background
         </h2>
         <div className="split">
           <div className="split__col">
@@ -316,7 +406,7 @@ export default function ArchitecturePage() {
 
       <section className="doc__section" aria-labelledby="failure">
         <h2 id="failure" className="doc__h2">
-          <span className="doc__num">05</span> How failure is surfaced
+          <span className="doc__num">06</span> How failure is surfaced
         </h2>
         <p className="doc__p">
           Every note carries a persisted status and, when it fails, the stage that
@@ -357,7 +447,7 @@ export default function ArchitecturePage() {
 
       <section className="doc__section" aria-labelledby="stack">
         <h2 id="stack" className="doc__h2">
-          <span className="doc__num">06</span> Stack, and why
+          <span className="doc__num">07</span> Stack, and why
         </h2>
         <dl className="stack-list">
           <StackItem
@@ -385,7 +475,7 @@ export default function ArchitecturePage() {
 
       <section className="doc__section" aria-labelledby="improve">
         <h2 id="improve" className="doc__h2">
-          <span className="doc__num">07</span> What I would do with more time
+          <span className="doc__num">08</span> What I would do with more time
         </h2>
         <ul className="improvements">
           {IMPROVEMENTS.map((item) => (
@@ -399,7 +489,7 @@ export default function ArchitecturePage() {
 
       <section className="doc__section" aria-labelledby="source">
         <h2 id="source" className="doc__h2">
-          <span className="doc__num">08</span> Source
+          <span className="doc__num">09</span> Source
         </h2>
         <p className="doc__p">
           The full source, including local setup instructions and the environment

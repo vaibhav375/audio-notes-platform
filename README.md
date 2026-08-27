@@ -18,6 +18,13 @@ be reopened at any time.
   polling as a fallback.
 - Summarises the transcript with an LLM and stores both.
 - Shows real progress and real failure states throughout, with per-stage retry.
+- **Navigable transcripts** — every line is timestamped and seeks the audio when
+  clicked, with the spoken line highlighting as it plays.
+- **Search** across every stored transcript and summary, with highlighted
+  excerpts. Works in Devanagari as well as Latin scripts.
+- **Exports** — timestamped text, Markdown, and SRT/WebVTT subtitles built from
+  the real segment timings.
+- **Optional two-speaker separation** for interviews and support calls.
 
 The engineering reasoning behind these choices lives on the `/architecture`
 page of the running app. This file is for getting it running locally.
