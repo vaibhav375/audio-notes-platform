@@ -151,6 +151,23 @@ export function NoteDetail({ initial }: { initial: NoteView }) {
           </div>
         ) : null}
 
+        {note.status === "completed" && note.transcribeMode === "sync" ? (
+          <div className="notice notice--warn" role="status">
+            <span className="notice__title">Transcribed on the fallback path</span>
+            <span>
+              Gnani&apos;s batch transcription was unavailable, so this recording
+              was transcribed in short slices through the synchronous endpoint.
+              That path is less accurate on continuous speech and can drop
+              passages entirely — expect a thinner transcript than usual, and a
+              summary drawn from it.
+            </span>
+            <span className="notice__hint">
+              Re-uploading once batch transcription recovers will produce a fuller
+              transcript.
+            </span>
+          </div>
+        ) : null}
+
         {note.status === "failed" ? (
           <div className="notice notice--error" role="alert">
             <span className="notice__title">

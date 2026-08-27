@@ -252,6 +252,37 @@ export default function ArchitecturePage() {
           three-hour recording is encoded at exactly the same bitrate as a
           three-minute one, just across more slices.
         </p>
+        <h3 className="doc__h3">When the batch API is unavailable</h3>
+        <p className="doc__p">
+          The provider&apos;s batch pipeline stopped starting jobs during
+          development: a file uploads, sits <code>QUEUED</code>, and the job is
+          cancelled with <code>ReadTimeout</code> without ever starting. The
+          account was healthy throughout and the synchronous endpoint answered
+          normally, so this was one half of their service being unwell.
+        </p>
+        <p className="doc__p">
+          Slicing turns out to be the way around that too. The synchronous
+          endpoint rejects anything over thirty seconds — the documentation says
+          sixty — but the recording is already cut below that, so the same
+          slices and the same stitching serve both paths. Batch stays primary;
+          when a job cannot be submitted, or never leaves{" "}
+          <code>STARTING</code> after two minutes, the recording is transcribed
+          slice by slice instead, a few slices per request so no single request
+          has to carry a whole recording.
+        </p>
+        <p className="doc__p">
+          <strong>The fallback is genuinely worse, and the app says so.</strong>{" "}
+          On the same two-and-a-half minute recording, batch produced about 1,600
+          characters of transcript and the fallback about 450. Short slices with
+          hard cuts do not suit this model: a slice that opens mid-pause returns
+          nothing at all. Starting each slice at its first sound recovered some
+          of that, and the remainder is a real limitation rather than a bug to be
+          tuned away. A recording transcribed this way carries a notice on its
+          page saying what happened and why the transcript is thin — a quietly
+          degraded result presented as a normal one would be worse than the
+          outage itself.
+        </p>
+
         <h3 className="doc__h3">One job per slice, and a note on why</h3>
         <p className="doc__p">
           Each slice is submitted as <strong>its own job</strong>, rather than

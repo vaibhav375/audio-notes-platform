@@ -14,6 +14,7 @@ export type NoteView = {
   audioUrl: string;
   parts: AudioPart[] | null;
   status: Note["status"];
+  transcribeMode: Note["transcribeMode"];
   gnaniJobId: string | null;
   gnaniStatus: string | null;
   progress: Note["progress"];
@@ -44,6 +45,7 @@ export function toView(note: Note, options: { withText?: boolean } = {}): NoteVi
     audioUrl: note.audioUrl,
     parts: note.parts,
     status: note.status,
+    transcribeMode: note.transcribeMode,
     gnaniJobId: note.gnaniJobId,
     gnaniStatus: note.gnaniStatus,
     progress: note.progress,
