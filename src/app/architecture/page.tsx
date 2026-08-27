@@ -391,6 +391,32 @@ export default function ArchitecturePage() {
           summary is a way in, not a replacement.
         </p>
 
+        <h3 className="doc__h3">Nine languages, verified</h3>
+        <p className="doc__p">
+          The language chosen at upload is passed straight through to the ASR
+          provider, and all nine it supports have been tested against the live
+          API with real spoken-word recordings rather than taken on trust:
+          Hindi, Kannada, Tamil, Telugu, Malayalam, Marathi, Bengali, Gujarati
+          and Indian English. Each returns text in its own script.
+        </p>
+        <p className="doc__p">
+          That is why search uses a script-agnostic text-search configuration,
+          and why nothing in the transcript view sets a font that would fall back
+          to empty boxes on Kannada or Bengali.
+        </p>
+        <p className="doc__p">
+          Summaries come back in English whatever the spoken language, which is
+          usually the point of summarising a recording you cannot read. The
+          transcript stays in its original script, so the summary is a way in
+          rather than a replacement.
+        </p>
+        <p className="doc__p">
+          Two of the test recordings looked at first like failed integrations and
+          were not: both open with music and invocation, and transcribing that
+          returns almost nothing. Sampling past the intro produced full text. It
+          is the shape of mistake that gets misread as a broken API.
+        </p>
+
         <h3 className="doc__h3">Search across everything</h3>
         <p className="doc__p">
           A list ordered by date cannot answer &ldquo;which recording mentioned
