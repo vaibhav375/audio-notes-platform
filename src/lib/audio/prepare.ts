@@ -157,8 +157,17 @@ export async function prepareAudio(
   for (const [index, chunk] of boundaries.entries()) {
     const from = Math.floor(chunk.start * sampleRate);
     const to = Math.min(mono.length, Math.ceil(chunk.end * sampleRate));
-    const slice = mono.subarray(from, to);
-    const bitrate = chooseBitrate(chunk.end - chunk.start);
+    const raw = mono.subarray(from, to);
+
+    // Start the slice at its first sound. A slice that opens with a pause comes
+    // back from the transcriber completely empty — its voice detection gives up
+    // before it reaches the speech — and slicing on a fixed clock means roughly
+    // half of them land mid-pause. Skipping the silence is what makes short
+    // slices usable at all.
+    const lead = leadingSilenceSamples(raw, sampleRate);
+    const slice = lead > 0 ? raw.subarray(lead) : raw;
+    const start = chunk.start + lead / sampleRate;
+    const bitrate = chooseBitrate(chunk.end - start);
 
     const mp3 = await encodeMp3(slice, sampleRate, bitrate, (ratio) =>
       onProgress({
@@ -181,8 +190,8 @@ export async function prepareAudio(
           ? `${base}.mp3`
           : `${base}-part${String(index + 1).padStart(2, "0")}.mp3`,
       contentType: "audio/mpeg",
-      offsetSeconds: chunk.start,
-      durationSeconds: chunk.end - chunk.start,
+      offsetSeconds: start,
+      durationSeconds: chunk.end - start,
     });
   }
 
@@ -314,6 +323,40 @@ async function encodeMp3(
   if (tail.length > 0) output.push(tail);
 
   return new Blob(output as BlobPart[], { type: "audio/mpeg" });
+}
+
+/**
+ * Samples of near-silence at the start of a slice.
+ *
+ * Scans in short windows for the first one that carries real signal, then backs
+ * off slightly so the first word is not clipped. Gives up after a few seconds:
+ * beyond that the slice is genuinely quiet and there is nothing to skip to.
+ */
+export function leadingSilenceSamples(
+  samples: Float32Array,
+  sampleRate: number,
+  options: { threshold?: number; maxTrimSeconds?: number } = {},
+): number {
+  const threshold = options.threshold ?? 0.02;
+  const maxTrim = Math.min(
+    samples.length,
+    Math.floor((options.maxTrimSeconds ?? 4) * sampleRate),
+  );
+  const window = Math.max(1, Math.floor(sampleRate * 0.02));
+  const leadIn = Math.floor(sampleRate * 0.1);
+
+  for (let start = 0; start < maxTrim; start += window) {
+    const end = Math.min(start + window, samples.length);
+    let peak = 0;
+    for (let i = start; i < end; i += 1) {
+      const value = Math.abs(samples[i]);
+      if (value > peak) peak = value;
+    }
+    if (peak > threshold) return Math.max(0, start - leadIn);
+  }
+
+  // Nothing but quiet in the searched span; send the slice unchanged.
+  return 0;
 }
 
 function yieldToBrowser(): Promise<void> {
