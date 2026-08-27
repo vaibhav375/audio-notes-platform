@@ -9,6 +9,7 @@ import {
   getJobFiles,
   GnaniError,
   isTerminal,
+  parseDuration,
   startJob,
   type GnaniProgress,
 } from "@/lib/gnani";
@@ -248,11 +249,8 @@ async function pollTranscription(note: Note): Promise<Note> {
       gnaniFileId: file.file_id,
       durationSeconds:
         note.durationSeconds ??
-        (file.duration_seconds != null
-          ? Math.round(file.duration_seconds)
-          : transcript.duration_seconds != null
-            ? Math.round(transcript.duration_seconds)
-            : null),
+        parseDuration(file.duration_seconds) ??
+        parseDuration(transcript.duration_seconds),
       errorMessage: null,
       failureStage: null,
       updatedAt: new Date(),

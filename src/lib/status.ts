@@ -2,12 +2,28 @@ import type { NoteView } from "@/lib/serialize";
 
 export type Tone = "idle" | "live" | "done" | "failed";
 
+/**
+ * True when Gnani has accepted the job but not yet begun work on the file.
+ *
+ * The job status reads IN_PROGRESS from the moment it is accepted, so the only
+ * way to tell waiting-in-a-queue from actually-being-transcribed is the
+ * per-file counters.
+ */
+function isQueued(note: Pick<NoteView, "progress">): boolean {
+  const progress = note.progress;
+  if (!progress) return false;
+  return progress.queuedFiles > 0 && progress.inProgressFiles === 0;
+}
+
 /** Human-facing wording for each pipeline state. */
-export function statusLabel(note: Pick<NoteView, "status" | "gnaniStatus">): string {
+export function statusLabel(
+  note: Pick<NoteView, "status" | "gnaniStatus" | "progress">,
+): string {
   switch (note.status) {
     case "uploaded":
       return "Queued";
     case "transcribing":
+      if (isQueued(note)) return "Queued";
       return note.gnaniStatus === "IN_PROGRESS" ? "Transcribing" : "Preparing";
     case "summarizing":
       return "Summarising";
@@ -49,7 +65,7 @@ export function completionRatio(note: NoteView): number {
         case "QUEUED":
           return 0.38;
         case "IN_PROGRESS":
-          return 0.62;
+          return isQueued(note) ? 0.44 : 0.68;
         default:
           return 0.2;
       }
@@ -68,9 +84,10 @@ export function statusDetail(note: NoteView): string | null {
     case "uploaded":
       return "Registering the recording with the transcription service.";
     case "transcribing":
-      return note.gnaniStatus === "QUEUED"
-        ? "Waiting in Gnani's batch queue. Longer recordings take longer to reach the front."
-        : "Gnani is transcribing the audio. This runs in the background — you can leave this page.";
+      if (isQueued(note) || note.gnaniStatus === "QUEUED") {
+        return "Waiting in Gnani's batch queue. This runs in the background — you can leave this page.";
+      }
+      return "Gnani is transcribing the audio. This runs in the background — you can leave this page.";
     case "summarizing":
       return "Transcript stored. Generating the summary.";
     default:

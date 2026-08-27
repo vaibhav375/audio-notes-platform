@@ -52,18 +52,19 @@ export type GnaniJob = {
 
 export type GnaniJobFile = {
   file_id: string;
-  filename?: string;
+  original_path?: string;
   status: string;
-  duration_seconds?: number;
+  /** The files endpoint returns this as a string, e.g. "131.50". */
+  duration_seconds?: string | number;
   transcript_url?: string;
-  error_message?: string;
+  error_message?: string | null;
 };
 
 export type GnaniTranscript = {
   file_id: string;
   job_id: string;
   language_code: string;
-  duration_seconds?: number;
+  duration_seconds?: string | number;
   full_transcript: string;
   segments?: unknown[];
 };
@@ -123,7 +124,9 @@ async function request<T>(
         ? record.code
         : typeof record.error_code === "string"
           ? record.error_code
-          : null;
+          : typeof record.error === "string" && typeof record.message === "string"
+            ? record.error
+            : null;
     throw new GnaniError(message, response.status, code);
   }
 
@@ -234,12 +237,23 @@ export async function getJob(jobId: string): Promise<GnaniJob> {
 }
 
 export async function getJobFiles(jobId: string): Promise<GnaniJobFile[]> {
-  const body = await request<{ files?: GnaniJobFile[] } | GnaniJobFile[]>(
-    `/stt/v3/batch/jobs/${encodeURIComponent(jobId)}/files`,
-    { method: "GET", cache: "no-store" },
-  );
+  const body = await request<
+    { data?: GnaniJobFile[]; files?: GnaniJobFile[] } | GnaniJobFile[]
+  >(`/stt/v3/batch/jobs/${encodeURIComponent(jobId)}/files`, {
+    method: "GET",
+    cache: "no-store",
+  });
   if (Array.isArray(body)) return body;
-  return body.files ?? [];
+  // The live API returns `{ job_id, data: [...], pagination }`; `files` is
+  // accepted as well so a future rename does not silently return nothing.
+  return body.data ?? body.files ?? [];
+}
+
+/** Parses the duration field, which is a string on some endpoints. */
+export function parseDuration(value: string | number | null | undefined): number | null {
+  if (value == null) return null;
+  const parsed = typeof value === "number" ? value : Number.parseFloat(value);
+  return Number.isFinite(parsed) ? Math.round(parsed) : null;
 }
 
 /**

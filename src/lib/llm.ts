@@ -43,7 +43,7 @@ Concrete follow-ups or decisions, as bullets. Write "None identified." if there 
 
 Rules:
 - Use only what the transcript actually says. Never invent details, names, numbers or outcomes.
-- Automatic transcription makes mistakes; if a passage is garbled, summarise around it rather than guessing.
+- Automatic transcription makes mistakes, especially with numbers, names and units; if a passage is garbled or a figure looks implausible, summarise around it rather than repeating it as fact.
 - Do not add a preamble, a closing remark, or any section beyond the three above.`;
 
 export type SummaryResult = {
