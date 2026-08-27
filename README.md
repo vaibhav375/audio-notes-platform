@@ -4,7 +4,7 @@ Upload a recording, get back a transcript from [Gnani.ai](https://gnani.ai)'s
 speech-to-text API and an LLM-generated summary. Past uploads are kept and can
 be reopened at any time.
 
-**Live app:** _(deployed URL)_ · **Design writeup:** `/architecture` on the live app
+**Live app:** <https://audio-notes-platform.vercel.app> · **Design writeup:** `/architecture` on the live app
 
 ---
 
