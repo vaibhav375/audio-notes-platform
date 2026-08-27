@@ -43,3 +43,6 @@ next-env.d.ts
 # local env
 .env
 .env.local
+
+# the template belongs in the repo; the `.env*` rule above would hide it
+!.env.example
