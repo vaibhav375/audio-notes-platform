@@ -67,6 +67,7 @@ type CreateBody = {
   transcoded?: unknown;
   durationSeconds?: unknown;
   languageCode?: unknown;
+  diarize?: unknown;
 };
 
 /**
@@ -139,6 +140,7 @@ export async function POST(request: Request): Promise<Response> {
         transcoded: body.transcoded === true ? "true" : "false",
         durationSeconds: num(body.durationSeconds),
         languageCode,
+        diarize: body.diarize === true,
         audioUrl,
         audioPathname: str(body.audioPathname) ?? new URL(audioUrl).pathname.slice(1),
         status: "uploaded",

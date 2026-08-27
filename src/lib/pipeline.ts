@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { notes, type JobProgress, type Note } from "@/lib/db/schema";
+import { notes, type JobProgress, type Note, type Segment } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import {
   createJob,
@@ -89,6 +89,7 @@ export async function beginTranscription(note: Note): Promise<Note> {
       audioUrl: note.audioUrl,
       languageCode: note.languageCode,
       callbackUrl: callbackUrl(),
+      diarize: note.diarize,
     });
 
     await patch(note.id, {
@@ -252,7 +253,7 @@ async function pollTranscription(note: Note): Promise<Note> {
     .set({
       status: "summarizing",
       transcript: fullTranscript,
-      segments: transcript.segments ?? null,
+      segments: normaliseSegments(transcript.segments),
       gnaniFileId: file.file_id,
       durationSeconds:
         note.durationSeconds ??
@@ -366,6 +367,31 @@ export async function runSummary(note: Note): Promise<Note> {
 
     return failed ?? (await getNote(note.id)) ?? claimed;
   }
+}
+
+/**
+ * Keeps only the fields the UI uses. Provider payloads carry several keys that
+ * come back null on every request, and storing them would bloat every row.
+ */
+function normaliseSegments(raw: unknown): Segment[] | null {
+  if (!Array.isArray(raw)) return null;
+  const segments: Segment[] = [];
+  raw.forEach((entry, index) => {
+    const s = entry as Record<string, unknown>;
+    const start = Number(s.start_time);
+    const end = Number(s.end_time);
+    const text = typeof s.text === "string" ? s.text.trim() : "";
+    if (!text || !Number.isFinite(start)) return;
+    const speaker = Number(s.speaker_id);
+    segments.push({
+      segment_id: Number.isFinite(Number(s.segment_id)) ? Number(s.segment_id) : index,
+      start_time: start,
+      end_time: Number.isFinite(end) ? end : start,
+      text,
+      speaker_id: Number.isFinite(speaker) ? speaker : null,
+    });
+  });
+  return segments.length > 0 ? segments : null;
 }
 
 export async function getNote(id: string): Promise<Note | null> {

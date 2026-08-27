@@ -186,6 +186,8 @@ export type CreateJobOptions = {
   audioUrl: string;
   languageCode: string;
   callbackUrl?: string | null;
+  /** Separate two speakers. The API caps num_speakers at 2. */
+  diarize?: boolean;
 };
 
 /**
@@ -202,6 +204,12 @@ export async function createJob(options: CreateJobOptions): Promise<GnaniJob> {
     language_code: options.languageCode,
     mode: "transcribe",
   };
+
+  if (options.diarize) {
+    config.with_diarization = true;
+    // Required whenever diarization is on, and the API rejects anything above 2.
+    config.num_speakers = 2;
+  }
 
   const body: Record<string, unknown> = {
     config,

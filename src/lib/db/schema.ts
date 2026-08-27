@@ -2,6 +2,7 @@ import {
   pgTable,
   text,
   integer,
+  boolean,
   timestamp,
   jsonb,
   index,
@@ -34,6 +35,18 @@ export type NoteStatus = (typeof NOTE_STATUSES)[number];
 export const FAILURE_STAGES = ["upload", "transcription", "summary"] as const;
 export type FailureStage = (typeof FAILURE_STAGES)[number];
 
+/**
+ * One utterance as returned by the ASR provider. Timings are what make the
+ * transcript navigable, so they are kept rather than flattened away.
+ */
+export type Segment = {
+  segment_id: number;
+  start_time: number;
+  end_time: number;
+  text: string;
+  speaker_id?: number | null;
+};
+
 export type JobProgress = {
   totalFiles: number;
   completedFiles: number;
@@ -58,6 +71,8 @@ export const notes = pgTable(
     transcoded: text("transcoded").notNull().default("false"),
     durationSeconds: integer("duration_seconds"),
     languageCode: text("language_code").notNull(),
+    /** Whether the user asked for two-speaker separation on this recording. */
+    diarize: boolean("diarize").notNull().default(false),
 
     // Where the audio bytes physically live.
     audioUrl: text("audio_url").notNull(),
@@ -72,7 +87,7 @@ export const notes = pgTable(
 
     // Results.
     transcript: text("transcript"),
-    segments: jsonb("segments").$type<unknown[]>(),
+    segments: jsonb("segments").$type<Segment[]>(),
     summary: text("summary"),
 
     // Failure surface.

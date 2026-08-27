@@ -34,6 +34,7 @@ export function Uploader({ onStarted }: { onStarted: () => void }) {
   const [detail, setDetail] = useState<string | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
   const [language, setLanguage] = useState<string>("en-IN");
+  const [diarize, setDiarize] = useState(false);
   const [dragging, setDragging] = useState(false);
 
   const busy = phase !== "idle";
@@ -86,6 +87,7 @@ export function Uploader({ onStarted }: { onStarted: () => void }) {
             transcoded: prepared.transcoded,
             durationSeconds: prepared.durationSeconds,
             languageCode: language,
+            diarize,
           }),
         });
 
@@ -124,7 +126,7 @@ export function Uploader({ onStarted }: { onStarted: () => void }) {
 
       setPhase("idle");
     },
-    [language, onStarted, router],
+    [diarize, language, onStarted, router],
   );
 
   const onDrop = useCallback(
@@ -155,21 +157,38 @@ export function Uploader({ onStarted }: { onStarted: () => void }) {
           </p>
         </div>
 
-        <label className="field">
-          <span className="field__label">Spoken language</span>
-          <select
-            className="field__select"
-            value={language}
-            disabled={busy}
-            onChange={(event) => setLanguage(event.target.value)}
-          >
-            {SUPPORTED_LANGUAGES.map((option) => (
-              <option key={option.code} value={option.code}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="controls">
+          <label className="field">
+            <span className="field__label">Spoken language</span>
+            <select
+              className="field__select"
+              value={language}
+              disabled={busy}
+              onChange={(event) => setLanguage(event.target.value)}
+            >
+              {SUPPORTED_LANGUAGES.map((option) => (
+                <option key={option.code} value={option.code}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={diarize}
+              disabled={busy}
+              onChange={(event) => setDiarize(event.target.checked)}
+            />
+            <span>
+              <span className="toggle__label">Two-speaker call</span>
+              <span className="toggle__hint">
+                Label who said what. For interviews and support calls.
+              </span>
+            </span>
+          </label>
+        </div>
       </div>
 
       <div

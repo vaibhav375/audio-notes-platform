@@ -14,6 +14,8 @@ import {
 } from "@/lib/status";
 import { NoteStrip } from "@/components/TickStrip";
 import { StatusChip } from "@/components/StatusChip";
+import { TranscriptPlayer } from "@/components/TranscriptPlayer";
+import { ExportMenu } from "@/components/ExportMenu";
 
 const STAGES = [
   { key: "upload", label: "Uploaded" },
@@ -109,7 +111,10 @@ export function NoteDetail({ initial }: { initial: NoteView }) {
             label="Sent"
             value={`${formatBytes(note.uploadedBytes)}${note.transcoded ? " · re-encoded" : ""}`}
           />
-          <Readout label="Job" value={note.gnaniJobId ?? "—"} truncate />
+          <Readout
+            label="Speakers"
+            value={note.diarize ? "separated" : "not separated"}
+          />
         </dl>
 
         <ol className="stages" aria-label="Processing stages">
@@ -181,15 +186,15 @@ export function NoteDetail({ initial }: { initial: NoteView }) {
           </div>
         ) : null}
 
-        <audio className="detail__audio" controls preload="none" src={note.audioUrl}>
-          Your browser cannot play this audio file.
-        </audio>
       </header>
 
       <section className="panel card" aria-labelledby="summary-heading">
-        <h2 id="summary-heading" className="panel__title">
-          Summary
-        </h2>
+        <div className="panel__head">
+          <h2 id="summary-heading" className="panel__title panel__title--bare">
+            Summary
+          </h2>
+          {note.transcript ? <ExportMenu note={note} /> : null}
+        </div>
         {note.summary ? (
           <div className="prose">
             <Markdown>{note.summary}</Markdown>
@@ -208,7 +213,12 @@ export function NoteDetail({ initial }: { initial: NoteView }) {
           Transcript
         </h2>
         {note.transcript ? (
-          <p className="transcript">{note.transcript}</p>
+          <TranscriptPlayer
+            audioUrl={note.audioUrl}
+            segments={note.segments}
+            transcript={note.transcript}
+            diarize={note.diarize}
+          />
         ) : (
           <p className="panel__placeholder">
             {note.status === "failed"
