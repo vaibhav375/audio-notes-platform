@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HL_END, HL_START, splitSnippet } from "@/lib/search";
+import { HL_END, HL_START, splitSnippet, toPrefixQuery } from "@/lib/search";
 
 describe("search excerpt splitting", () => {
   it("marks the highlighted run and leaves the rest plain", () => {
@@ -31,5 +31,35 @@ describe("search excerpt splitting", () => {
 
   it("returns nothing for an empty excerpt", () => {
     expect(splitSnippet("")).toEqual([]);
+  });
+});
+
+describe("building the search query", () => {
+  it("matches the last term as a prefix, so partial words find whole ones", () => {
+    expect(toPrefixQuery("refund")).toBe("refund:*");
+  });
+
+  it("requires every term, prefixing only the last", () => {
+    expect(toPrefixQuery("duplicate charge")).toBe("duplicate & charge:*");
+  });
+
+  it("works on non-Latin scripts, which is where it matters most", () => {
+    // A Kannada root rarely appears bare; searching it must still find the
+    // inflected form in the transcript.
+    expect(toPrefixQuery("ಶ್ರೀರಾಮಕೃಷ್ಣ")).toBe("ಶ್ರೀರಾಮಕೃಷ್ಣ:*");
+    expect(toPrefixQuery("शेती")).toBe("शेती:*");
+  });
+
+  it("strips punctuation that would otherwise reach to_tsquery as syntax", () => {
+    expect(toPrefixQuery("a & b")).toBe("a & b:*");
+    expect(toPrefixQuery("!!! ???")).toBe("");
+  });
+
+  it("keeps digits, which appear in transcribed numbers", () => {
+    expect(toPrefixQuery("10 megabytes")).toBe("10 & megabytes:*");
+  });
+
+  it("returns nothing for an empty query", () => {
+    expect(toPrefixQuery("   ")).toBe("");
   });
 });
