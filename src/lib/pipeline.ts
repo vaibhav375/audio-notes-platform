@@ -59,6 +59,18 @@ export const MAX_TRANSCRIPTION_ATTEMPTS = 4;
 /** Wait between resubmissions, so a retry cannot make rate limiting worse. */
 const RETRY_BACKOFF_MS = 90_000;
 
+/**
+ * How long a batch job may sit unstarted before the recording is moved to the
+ * synchronous path.
+ *
+ * A healthy job leaves CREATED/STARTING within about twenty seconds. When the
+ * provider's batch pipeline is unwell the job simply never starts — it does not
+ * fail, so waiting for a failure means waiting for the stall timeout, which is
+ * half an hour of a spinner. Two minutes is generous for a healthy job and
+ * short enough that nobody watches nothing happen.
+ */
+const BATCH_START_TIMEOUT_MS = 120_000;
+
 /** Provider-side conditions that say nothing about the file itself. */
 function looksTransient(reason: string | null | undefined): boolean {
   if (!reason) return true;
@@ -505,6 +517,27 @@ async function pollTranscription(note: Note): Promise<Note> {
   }
 
   if (!states.every((state) => isTerminal(state.status))) {
+    // A job that has not begun after this long is not going to. Hand the
+    // recording to the synchronous path rather than waiting out the stall
+    // timeout on a pipeline that is plainly not accepting work.
+    const unstarted = states.every(
+      (state) => state.status === "CREATED" || state.status === "STARTING",
+    );
+    const age = Date.now() - new Date(note.createdAt).getTime();
+
+    if (
+      unstarted &&
+      env.transcribeMode === "auto" &&
+      age > BATCH_START_TIMEOUT_MS
+    ) {
+      log.warn("note.batch_never_started", {
+        noteId: note.id,
+        ageMs: age,
+        status: states[0].status ?? "unknown",
+      });
+      return beginSyncTranscription(note, audioUrlsFor(note).length);
+    }
+
     return expireIfStuck(note);
   }
 
