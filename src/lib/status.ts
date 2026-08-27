@@ -84,6 +84,9 @@ export function statusDetail(note: NoteView): string | null {
     case "uploaded":
       return "Registering the recording with the transcription service.";
     case "transcribing":
+      if (note.errorMessage) {
+        return `Still working: ${note.errorMessage}`;
+      }
       if (isQueued(note) || note.gnaniStatus === "QUEUED") {
         return "Waiting in Gnani's batch queue. This runs in the background — you can leave this page.";
       }

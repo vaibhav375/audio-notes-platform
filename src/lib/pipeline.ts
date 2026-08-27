@@ -266,9 +266,16 @@ export async function reconcileNote(input: Note): Promise<Note> {
 
   if (note.status === "completed" || note.status === "failed") return note;
 
-  if (note.status === "uploaded" || !note.gnaniJobId) {
+  // Submit only when nothing has been submitted yet. A note on the synchronous
+  // path deliberately has no job id, so "no job id" cannot stand in for "not
+  // started" — treating it that way resubmits on every poll and returns before
+  // any transcription happens.
+  const submitted =
+    note.transcribeMode === "sync" || !!note.gnaniJobId || !!note.jobs?.length;
+
+  if (note.status === "uploaded" || !submitted) {
     note = await beginTranscription(note);
-    if (note.status === "failed" || !note.gnaniJobId) return note;
+    if (note.status === "failed") return note;
   }
 
   if (note.status === "transcribing") {
@@ -322,19 +329,36 @@ async function advanceSyncTranscription(note: Note): Promise<Note> {
       results[index] = transcript;
     } catch (error) {
       if (error instanceof GnaniError && error.retryable) {
-        // Save what did finish and let the next poll resume from here.
+        // Save what did finish and let the next poll resume from here. The
+        // reason is recorded on the note even though it has not failed:
+        // a silent retry loop is indistinguishable from a hang, both to the
+        // person waiting and to whoever has to debug it.
+        log.warn("note.slice_retrying", {
+          noteId: note.id,
+          slice: index,
+          status: error.status,
+          reason: error.message,
+        });
         return patch(note.id, {
           sliceTranscripts: results,
           progress: sliceProgress(results),
+          errorMessage: `Transcribing part ${index + 1} of ${parts.length}: ${error.message}`,
           lastPolledAt: new Date(),
         });
       }
+      log.error("note.slice_failed", {
+        noteId: note.id,
+        slice: index,
+        reason: error instanceof Error ? error.message : "unknown",
+      });
       return fail(
         note.id,
         "transcription",
         error instanceof GnaniError
           ? describeGnaniError(error)
-          : "Could not transcribe part of this recording.",
+          : `Could not transcribe part ${index + 1} of this recording: ${
+              error instanceof Error ? error.message : "unknown error"
+            }`,
       );
     }
   }
