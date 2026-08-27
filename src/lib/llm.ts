@@ -29,11 +29,33 @@ export class LlmError extends Error {
 const MIN_TRANSCRIPT_CHARS = 24;
 
 /**
- * Transcripts of long recordings can exceed the context window. Truncating at a
- * generous character budget keeps a single call viable; chunk-and-reduce
- * summarisation is listed under future work on /architecture.
+ * Longest transcript summarised in one call.
+ *
+ * Sized for the tokens-per-minute ceiling of a free tier rather than the model's
+ * context window: roughly four characters per token puts this around 4k tokens,
+ * which leaves room for the reply without tripping a rate limit on the first
+ * request.
  */
-const MAX_TRANSCRIPT_CHARS = 48_000;
+const SINGLE_PASS_CHARS = 16_000;
+
+/** Size of each slice when a transcript is summarised in passes. */
+const PASS_CHARS = 12_000;
+
+/**
+ * Guard against a pathological number of passes. At this length the recording
+ * is many hours long and a reduce over 40 notes is itself the wrong shape.
+ */
+const MAX_PASSES = 40;
+
+const MAP_PROMPT = `You are taking notes on one section of a longer transcript.
+
+List the substantive points in that section as bullets: decisions, facts,
+numbers, names, questions raised, and anything asked of a named person.
+
+Rules:
+- Use only what this section says. Never infer what came before or after it.
+- Automatic transcription makes mistakes, especially with numbers, names and units; if a figure looks implausible, describe it rather than asserting it.
+- Output bullets only. No heading, no preamble, no closing line.`;
 
 const SYSTEM_PROMPT = `You summarise transcripts of spoken audio recordings.
 
@@ -85,13 +107,66 @@ export async function summariseTranscript(
     );
   }
 
-  const input =
-    trimmed.length > MAX_TRANSCRIPT_CHARS
-      ? `${trimmed.slice(0, MAX_TRANSCRIPT_CHARS)}\n\n[transcript truncated for length]`
-      : trimmed;
+  if (trimmed.length <= SINGLE_PASS_CHARS) {
+    return withRetry(() => callOnce(SYSTEM_PROMPT, trimmed));
+  }
 
+  // Map: notes on each slice. Reduce: one summary over those notes. This keeps
+  // every request small enough to pass a rate limit, and means the middle of a
+  // long recording is represented rather than truncated away.
+  const passes = splitForPasses(trimmed).slice(0, MAX_PASSES);
+  const notes: string[] = [];
+
+  for (const [index, pass] of passes.entries()) {
+    const { summary } = await withRetry(() =>
+      callOnce(MAP_PROMPT, `Section ${index + 1} of ${passes.length}:\n\n${pass}`),
+    );
+    notes.push(summary);
+  }
+
+  const combined = notes
+    .map((note, index) => `Section ${index + 1}:\n${note}`)
+    .join("\n\n");
+
+  return withRetry(() =>
+    callOnce(
+      SYSTEM_PROMPT,
+      `These are ordered notes taken across one recording. Write the summary of the recording as a whole.\n\n${combined}`,
+    ),
+  );
+}
+
+/**
+ * Splits a transcript into passes on sentence-ish boundaries where it can, so a
+ * slice does not begin mid-thought. ASR output here is unpunctuated, so word
+ * boundaries are the realistic fallback.
+ */
+export function splitForPasses(
+  transcript: string,
+  size: number = PASS_CHARS,
+): string[] {
+  const words = transcript.split(/\s+/).filter(Boolean);
+  const passes: string[] = [];
+  let current: string[] = [];
+  let length = 0;
+
+  for (const word of words) {
+    if (length + word.length + 1 > size && current.length > 0) {
+      passes.push(current.join(" "));
+      current = [];
+      length = 0;
+    }
+    current.push(word);
+    length += word.length + 1;
+  }
+
+  if (current.length > 0) passes.push(current.join(" "));
+  return passes;
+}
+
+async function withRetry(call: () => Promise<SummaryResult>): Promise<SummaryResult> {
   try {
-    return await callOnce(input);
+    return await call();
   } catch (error) {
     // One inline retry, but only when the service told us how long to wait and
     // the wait fits inside the request budget.
@@ -99,13 +174,13 @@ export async function summariseTranscript(
       await new Promise((resolve) =>
         setTimeout(resolve, error.retryAfterSeconds! * 1000 + 500),
       );
-      return callOnce(input);
+      return call();
     }
     throw error;
   }
 }
 
-async function callOnce(input: string): Promise<SummaryResult> {
+async function callOnce(system: string, input: string): Promise<SummaryResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60_000);
 
@@ -123,8 +198,8 @@ async function callOnce(input: string): Promise<SummaryResult> {
         temperature: 0.2,
         max_tokens: 1200,
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: `Transcript:\n\n${input}` },
+          { role: "system", content: system },
+          { role: "user", content: input },
         ],
       }),
     });

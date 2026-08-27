@@ -1,6 +1,6 @@
 import { desc, inArray, lt, or, isNull, and } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { notes } from "@/lib/db/schema";
+import { notes, type AudioPart } from "@/lib/db/schema";
 import { GNANI_MAX_FILE_BYTES, SUPPORTED_LANGUAGES } from "@/lib/constants";
 import { beginTranscription, reconcileNote } from "@/lib/pipeline";
 import { toView } from "@/lib/serialize";
@@ -58,8 +58,7 @@ export async function GET(): Promise<Response> {
 }
 
 type CreateBody = {
-  audioUrl?: unknown;
-  audioPathname?: unknown;
+  parts?: unknown;
   originalFilename?: unknown;
   originalBytes?: unknown;
   uploadedBytes?: unknown;
@@ -85,47 +84,43 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Malformed request body." }, { status: 400 });
   }
 
-  const audioUrl = str(body.audioUrl);
   const originalFilename = str(body.originalFilename);
   const languageCode = str(body.languageCode);
   const uploadedBytes = num(body.uploadedBytes);
+  const parts = parseParts(body.parts);
 
-  if (!audioUrl || !originalFilename || !languageCode || uploadedBytes == null) {
+  if (!parts || !originalFilename || !languageCode || uploadedBytes == null) {
     return Response.json(
-      { error: "Missing one of: audioUrl, originalFilename, languageCode, uploadedBytes." },
+      { error: "Missing one of: parts, originalFilename, languageCode, uploadedBytes." },
       { status: 400 },
     );
   }
 
-  let host: string;
-  try {
-    const parsed = new URL(audioUrl);
-    host = parsed.hostname;
-    if (parsed.protocol !== "https:") throw new Error("not https");
-  } catch {
-    return Response.json({ error: "audioUrl is not a valid HTTPS URL." }, { status: 400 });
+  if (parts instanceof Error) {
+    return Response.json({ error: parts.message }, { status: 400 });
   }
 
-  if (!ALLOWED_AUDIO_HOST.test(host)) {
+  if (parts.length > 100) {
     return Response.json(
-      { error: "audioUrl must point at this application's own blob storage." },
-      { status: 400 },
+      { error: "That recording needs more than the 100 files a single job accepts." },
+      { status: 413 },
+    );
+  }
+
+  const oversized = parts.find((part) => part.bytes > GNANI_MAX_FILE_BYTES);
+  if (oversized) {
+    return Response.json(
+      {
+        error:
+          `One slice is ${(oversized.bytes / 1024 / 1024).toFixed(1)} MB, over the ` +
+          `${GNANI_MAX_FILE_BYTES / 1024 / 1024} MB per-file limit of Gnani's batch API.`,
+      },
+      { status: 413 },
     );
   }
 
   if (!LANGUAGE_CODES.has(languageCode as (typeof SUPPORTED_LANGUAGES)[number]["code"])) {
     return Response.json({ error: `Unsupported language code "${languageCode}".` }, { status: 400 });
-  }
-
-  if (uploadedBytes > GNANI_MAX_FILE_BYTES) {
-    return Response.json(
-      {
-        error:
-          `The uploaded audio is ${(uploadedBytes / 1024 / 1024).toFixed(1)} MB, ` +
-          `over the ${GNANI_MAX_FILE_BYTES / 1024 / 1024} MB per-file limit of Gnani's batch API.`,
-      },
-      { status: 413 },
-    );
   }
 
   try {
@@ -141,8 +136,9 @@ export async function POST(request: Request): Promise<Response> {
         durationSeconds: num(body.durationSeconds),
         languageCode,
         diarize: body.diarize === true,
-        audioUrl,
-        audioPathname: str(body.audioPathname) ?? new URL(audioUrl).pathname.slice(1),
+        audioUrl: parts[0].url,
+        audioPathname: parts[0].pathname,
+        parts,
         status: "uploaded",
       })
       .returning();
@@ -155,6 +151,48 @@ export async function POST(request: Request): Promise<Response> {
       { status: 500 },
     );
   }
+}
+
+/**
+ * Validates the uploaded slices. Every URL must live in this application's own
+ * blob store: the value is handed to the ASR provider to fetch, so accepting an
+ * arbitrary URL here would turn this endpoint into a fetch proxy.
+ */
+function parseParts(value: unknown): AudioPart[] | Error | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+
+  const parts: AudioPart[] = [];
+  for (const entry of value) {
+    const record = (entry ?? {}) as Record<string, unknown>;
+    const url = str(record.url);
+    const pathname = str(record.pathname);
+    const bytes = num(record.bytes);
+    if (!url || !pathname || bytes == null) {
+      return new Error("Each part needs a url, a pathname and a byte count.");
+    }
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:") throw new Error("not https");
+      if (!ALLOWED_AUDIO_HOST.test(parsed.hostname)) {
+        return new Error(
+          "Every part must point at this application's own blob storage.",
+        );
+      }
+    } catch {
+      return new Error(`"${url}" is not a valid HTTPS URL.`);
+    }
+    parts.push({
+      url,
+      pathname,
+      bytes,
+      offsetSeconds: num(record.offsetSeconds) ?? 0,
+      durationSeconds: num(record.durationSeconds) ?? 0,
+    });
+  }
+
+  // Order is what lets transcripts be stitched back together correctly.
+  parts.sort((a, b) => a.offsetSeconds - b.offsetSeconds);
+  return parts;
 }
 
 function str(value: unknown): string | null {

@@ -11,9 +11,11 @@ import {
   isTerminal,
   parseDuration,
   startJob,
+  type GnaniJobFile,
   type GnaniProgress,
 } from "@/lib/gnani";
 import { LlmError, summariseTranscript } from "@/lib/llm";
+import { log } from "@/lib/log";
 
 /**
  * Drives a note from `uploaded` to `completed`.
@@ -52,6 +54,7 @@ async function fail(
   stage: "upload" | "transcription" | "summary",
   message: string,
 ): Promise<Note> {
+  log.error("note.failed", { noteId: id, stage, reason: message });
   return patch(id, {
     status: "failed",
     failureStage: stage,
@@ -70,6 +73,16 @@ function normaliseProgress(progress?: GnaniProgress): JobProgress | null {
   };
 }
 
+/** Every slice of a recording, in order. Falls back for pre-chunking rows. */
+function audioUrlsFor(note: Note): string[] {
+  if (note.parts?.length) {
+    return [...note.parts]
+      .sort((a, b) => a.offsetSeconds - b.offsetSeconds)
+      .map((part) => part.url);
+  }
+  return [note.audioUrl];
+}
+
 /** Builds the webhook URL, or null when this deployment cannot receive one. */
 function callbackUrl(): string | null {
   const origin = env.publicOrigin;
@@ -86,7 +99,7 @@ function callbackUrl(): string | null {
 export async function beginTranscription(note: Note): Promise<Note> {
   try {
     const job = await createJob({
-      audioUrl: note.audioUrl,
+      audioUrls: audioUrlsFor(note),
       languageCode: note.languageCode,
       callbackUrl: callbackUrl(),
       diarize: note.diarize,
@@ -100,6 +113,13 @@ export async function beginTranscription(note: Note): Promise<Note> {
 
     // A created job sits idle until it is explicitly started.
     const started = await startJob(job.job_id);
+    log.info("note.job_started", {
+      noteId: note.id,
+      jobId: job.job_id,
+      files: audioUrlsFor(note).length,
+      language: note.languageCode,
+      diarize: note.diarize,
+    });
 
     return patch(note.id, {
       gnaniStatus: started.status ?? job.status,
@@ -215,8 +235,7 @@ async function pollTranscription(note: Note): Promise<Note> {
     throw error;
   }
 
-  const file = files[0];
-  if (!file) {
+  if (files.length === 0) {
     return fail(
       note.id,
       "transcription",
@@ -224,18 +243,26 @@ async function pollTranscription(note: Note): Promise<Note> {
     );
   }
 
-  if (!file.transcript_url) {
+  const ordered = orderFiles(files, note);
+
+  const missing = ordered.find((file) => !file.transcript_url);
+  if (missing) {
     return fail(
       note.id,
       "transcription",
-      file.error_message ??
-        "Gnani finished the job without producing a transcript for this file.",
+      missing.error_message ??
+        "Gnani finished the job without producing a transcript for part of this recording.",
     );
   }
 
-  let transcript;
+  let downloaded;
   try {
-    transcript = await downloadTranscript(file.transcript_url);
+    // Sequential rather than parallel: transcripts are small, and a burst of
+    // parallel fetches is a good way to get rate limited on a long recording.
+    downloaded = [];
+    for (const file of ordered) {
+      downloaded.push(await downloadTranscript(file.transcript_url!));
+    }
   } catch (error) {
     if (error instanceof GnaniError && error.retryable) return expireIfStuck(note);
     return fail(
@@ -245,7 +272,14 @@ async function pollTranscription(note: Note): Promise<Note> {
     );
   }
 
-  const fullTranscript = (transcript.full_transcript ?? "").trim();
+  const stitched = stitch(downloaded, offsetsFor(ordered, note));
+  log.info("note.transcribed", {
+    noteId: note.id,
+    files: ordered.length,
+    segments: stitched.segments.length,
+    characters: stitched.transcript.length,
+  });
+  const fullTranscript = stitched.transcript;
 
   // Claim the transition, so two concurrent pollers cannot both summarise.
   const [claimed] = await db()
@@ -253,12 +287,15 @@ async function pollTranscription(note: Note): Promise<Note> {
     .set({
       status: "summarizing",
       transcript: fullTranscript,
-      segments: normaliseSegments(transcript.segments),
-      gnaniFileId: file.file_id,
+      segments: stitched.segments.length > 0 ? stitched.segments : null,
+      gnaniFileId: ordered[0].file_id,
       durationSeconds:
         note.durationSeconds ??
-        parseDuration(file.duration_seconds) ??
-        parseDuration(transcript.duration_seconds),
+        (ordered.reduce(
+          (total, entry) => total + (parseDuration(entry.duration_seconds) ?? 0),
+          0,
+        ) ||
+          null),
       errorMessage: null,
       failureStage: null,
       updatedAt: new Date(),
@@ -325,7 +362,14 @@ export async function runSummary(note: Note): Promise<Note> {
   }
 
   try {
+    const started = Date.now();
     const { summary } = await summariseTranscript(transcript);
+    log.info("note.summarised", {
+      noteId: note.id,
+      attempt: claimed.summaryAttempts,
+      ms: Date.now() - started,
+      transcriptChars: transcript.length,
+    });
 
     const [completed] = await db()
       .update(notes)
@@ -351,6 +395,11 @@ export async function runSummary(note: Note): Promise<Note> {
     if (transient) {
       // Stay in `summarizing` so the next poll picks it up. The note is not
       // failed — it is waiting out a limit that clears on its own.
+      log.warn("note.summary_retrying", {
+        noteId: note.id,
+        attempt: claimed.summaryAttempts,
+        reason: message,
+      });
       return patch(note.id, { errorMessage: message });
     }
 
@@ -373,7 +422,88 @@ export async function runSummary(note: Note): Promise<Note> {
  * Keeps only the fields the UI uses. Provider payloads carry several keys that
  * come back null on every request, and storing them would bloat every row.
  */
-function normaliseSegments(raw: unknown): Segment[] | null {
+/**
+ * Puts the provider's files back into recording order.
+ *
+ * A multi-file job may return files in any order, so they are matched to the
+ * uploaded slices by filename and fall back to the provider's own ordering.
+ */
+function orderFiles(files: GnaniJobFile[], note: Note): GnaniJobFile[] {
+  if (!note.parts?.length || files.length <= 1) return files;
+
+  const rank = new Map<string, number>();
+  [...note.parts]
+    .sort((a, b) => a.offsetSeconds - b.offsetSeconds)
+    .forEach((part, index) => {
+      // Blob pathnames carry a random suffix; the basename is what the provider
+      // echoes back in original_path.
+      rank.set(basename(part.pathname), index);
+    });
+
+  return [...files].sort((a, b) => {
+    const ra = rank.get(basename(a.original_path ?? "")) ?? Number.MAX_SAFE_INTEGER;
+    const rb = rank.get(basename(b.original_path ?? "")) ?? Number.MAX_SAFE_INTEGER;
+    return ra - rb;
+  });
+}
+
+function basename(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+/** Start time of each file within the whole recording. */
+function offsetsFor(files: GnaniJobFile[], note: Note): number[] {
+  const parts = note.parts?.length
+    ? [...note.parts].sort((a, b) => a.offsetSeconds - b.offsetSeconds)
+    : [];
+
+  if (parts.length === files.length) {
+    return parts.map((part) => part.offsetSeconds);
+  }
+
+  // No stored parts (a row from before chunking) — accumulate the reported
+  // durations instead so timings still line up.
+  let running = 0;
+  return files.map((file) => {
+    const start = running;
+    running += parseDuration(file.duration_seconds) ?? 0;
+    return start;
+  });
+}
+
+/**
+ * Joins per-slice transcripts into one recording.
+ *
+ * Segment times arrive relative to their own slice, so each is shifted by where
+ * that slice starts. Without this a click on a line in the third chunk would
+ * seek to the wrong place entirely.
+ */
+export function stitch(
+  transcripts: { full_transcript?: string; segments?: unknown }[],
+  offsets: number[],
+): { transcript: string; segments: Segment[] } {
+  const texts: string[] = [];
+  const segments: Segment[] = [];
+
+  transcripts.forEach((transcript, index) => {
+    const offset = offsets[index] ?? 0;
+    const text = (transcript.full_transcript ?? "").trim();
+    if (text) texts.push(text);
+
+    for (const segment of normaliseSegments(transcript.segments) ?? []) {
+      segments.push({
+        ...segment,
+        segment_id: segments.length,
+        start_time: segment.start_time + offset,
+        end_time: segment.end_time + offset,
+      });
+    }
+  });
+
+  return { transcript: texts.join(" ").trim(), segments };
+}
+
+export function normaliseSegments(raw: unknown): Segment[] | null {
   if (!Array.isArray(raw)) return null;
   const segments: Segment[] = [];
   raw.forEach((entry, index) => {
@@ -382,7 +512,11 @@ function normaliseSegments(raw: unknown): Segment[] | null {
     const end = Number(s.end_time);
     const text = typeof s.text === "string" ? s.text.trim() : "";
     if (!text || !Number.isFinite(start)) return;
-    const speaker = Number(s.speaker_id);
+    // Number(null) is 0, which would render as a real "Speaker 0".
+    const speaker =
+      s.speaker_id === null || s.speaker_id === undefined
+        ? Number.NaN
+        : Number(s.speaker_id);
     segments.push({
       segment_id: Number.isFinite(Number(s.segment_id)) ? Number(s.segment_id) : index,
       start_time: start,

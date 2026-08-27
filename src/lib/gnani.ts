@@ -182,8 +182,8 @@ async function fetchWithRetry(
 }
 
 export type CreateJobOptions = {
-  /** Publicly readable HTTPS URL of the audio object. */
-  audioUrl: string;
+  /** Publicly readable HTTPS URLs, in playback order. */
+  audioUrls: string[];
   languageCode: string;
   callbackUrl?: string | null;
   /** Separate two speakers. The API caps num_speakers at 2. */
@@ -216,7 +216,7 @@ export async function createJob(options: CreateJobOptions): Promise<GnaniJob> {
     source: {
       type: "cloud_storage",
       auth: { mode: "public" },
-      paths: [options.audioUrl],
+      paths: options.audioUrls,
     },
   };
 

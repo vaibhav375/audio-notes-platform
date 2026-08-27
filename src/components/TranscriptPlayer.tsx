@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { Segment } from "@/lib/db/schema";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import type { AudioPart, Segment } from "@/lib/db/schema";
 
 /**
  * A transcript you can navigate rather than just read.
@@ -12,20 +13,55 @@ import type { Segment } from "@/lib/db/schema";
  * against the audio instead of taking the transcript's word for it.
  */
 export function TranscriptPlayer({
+  noteId,
   audioUrl,
-  segments,
+  parts,
+  segments: initialSegments,
   transcript,
   diarize,
 }: {
+  noteId: string;
   audioUrl: string;
+  parts: AudioPart[] | null;
   segments: Segment[] | null;
   transcript: string | null;
   diarize: boolean;
 }) {
+  const [segments, setSegments] = useState(initialSegments);
+  const [relabelling, setRelabelling] = useState(false);
+  const searchParams = useSearchParams();
   const audioRef = useRef<HTMLAudioElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [follow, setFollow] = useState(true);
+  // A ref, not state: this is a handoff between "src changed" and "metadata
+  // loaded", and putting it in state would re-render for no visual reason.
+  const pendingPlay = useRef<number | null>(null);
+
+  // A long recording is uploaded in slices, so the element plays one slice at a
+  // time while the transcript addresses the whole thing. This maps between the
+  // two, and collapses to a no-op for single-slice recordings.
+  const slices: AudioPart[] = useMemo(() => {
+    if (parts?.length) {
+      return [...parts].sort((a, b) => a.offsetSeconds - b.offsetSeconds);
+    }
+    return [
+      { url: audioUrl, pathname: "", bytes: 0, offsetSeconds: 0, durationSeconds: 0 },
+    ];
+  }, [parts, audioUrl]);
+
+  const [sliceIndex, setSliceIndex] = useState(0);
+  const currentSlice = slices[Math.min(sliceIndex, slices.length - 1)];
+
+  const sliceFor = useCallback(
+    (time: number) => {
+      for (let i = slices.length - 1; i >= 0; i -= 1) {
+        if (time >= slices[i].offsetSeconds) return i;
+      }
+      return 0;
+    },
+    [slices],
+  );
 
   const hasSegments = !!segments?.length;
 
@@ -36,7 +72,7 @@ export function TranscriptPlayer({
     if (!audio || !segments?.length) return;
 
     const onTime = () => {
-      const t = audio.currentTime;
+      const t = audio.currentTime + currentSlice.offsetSeconds;
       const index = segments.findIndex(
         (segment, i) =>
           t >= segment.start_time &&
@@ -45,9 +81,40 @@ export function TranscriptPlayer({
       setActiveIndex(index);
     };
 
+    // Rolling from one slice into the next should feel like one recording.
+    const onEnded = () => {
+      if (sliceIndex < slices.length - 1) {
+        pendingPlay.current = 0;
+        setSliceIndex(sliceIndex + 1);
+      }
+    };
+
     audio.addEventListener("timeupdate", onTime);
-    return () => audio.removeEventListener("timeupdate", onTime);
-  }, [segments]);
+    audio.addEventListener("ended", onEnded);
+    return () => {
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("ended", onEnded);
+    };
+  }, [segments, currentSlice.offsetSeconds, sliceIndex, slices.length]);
+
+  // When the source changes, resume at the point that was asked for.
+  useEffect(() => {
+    const audio = audioRef.current;
+    const target = pendingPlay.current;
+    if (!audio || target == null) return;
+    pendingPlay.current = null;
+
+    const onReady = () => {
+      audio.currentTime = target;
+      void audio.play().catch(() => {
+        // Autoplay may be blocked; the seek still lands, which is the point.
+      });
+    };
+    if (audio.readyState >= 1) onReady();
+    else audio.addEventListener("loadedmetadata", onReady, { once: true });
+
+    return () => audio.removeEventListener("loadedmetadata", onReady);
+  }, [sliceIndex]);
 
   // Keep the playing line in view, unless the reader has scrolled away to read
   // somewhere else — following them around would be hostile.
@@ -63,32 +130,117 @@ export function TranscriptPlayer({
     }
   }, [activeIndex, follow]);
 
-  const seek = useCallback((seconds: number) => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.currentTime = seconds;
-    setFollow(true);
-    void audio.play().catch(() => {
-      // Autoplay can be blocked; the seek still lands, which is the point.
-    });
-  }, []);
+  const jumpedTo = useRef<string | null>(null);
+
+  const seek = useCallback(
+    (seconds: number) => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      setFollow(true);
+
+      const target = sliceFor(seconds);
+      const local = seconds - slices[target].offsetSeconds;
+
+      if (target !== sliceIndex) {
+        // Changing src; the effect above seeks once metadata has loaded.
+        pendingPlay.current = local;
+        setSliceIndex(target);
+        return;
+      }
+
+      audio.currentTime = local;
+      void audio.play().catch(() => {
+        // Autoplay can be blocked; the seek still lands, which is the point.
+      });
+    },
+    [sliceFor, sliceIndex, slices],
+  );
+
+  // Arriving from a search result: jump straight to where the match was said.
+  // Deferred a tick so the audio element is mounted, and so this does not set
+  // state synchronously inside the effect.
+  useEffect(() => {
+    const t = searchParams.get("t");
+    if (!t || jumpedTo.current === t || !segments?.length) return;
+    const seconds = Number(t);
+    if (!Number.isFinite(seconds)) return;
+    jumpedTo.current = t;
+    const timer = setTimeout(() => seek(seconds), 0);
+    return () => clearTimeout(timer);
+  }, [searchParams, segments, seek]);
+
+  /**
+   * Reassigns a speaker from this point onwards.
+   *
+   * Diarization mislabels turns, and correcting one line at a time would be
+   * tedious. A run of turns almost always shares the same mistake, so a change
+   * carries forward until the next time the provider switched speaker.
+   */
+  const relabel = useCallback(
+    async (index: number) => {
+      if (!segments) return;
+      const from = segments[index];
+      const next = from.speaker_id === 1 ? 2 : 1;
+
+      const updated = segments.map((segment, i) =>
+        i >= index && segment.speaker_id === from.speaker_id
+          ? { ...segment, speaker_id: next }
+          : segment,
+      );
+      setSegments(updated);
+      setRelabelling(true);
+
+      try {
+        await fetch(`/api/notes/${noteId}/speakers`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fromSegmentId: from.segment_id, speakerId: next }),
+        });
+      } catch {
+        setSegments(segments); // Put it back; the change did not stick.
+      } finally {
+        setRelabelling(false);
+      }
+    },
+    [noteId, segments],
+  );
+
+  const audioAvailable = !!currentSlice.url;
 
   return (
     <>
+      {audioAvailable ? (
       <audio
         ref={audioRef}
         className="detail__audio"
         controls
         preload="metadata"
-        src={audioUrl}
+        src={currentSlice.url}
       >
         Your browser cannot play this audio file.
       </audio>
+      ) : (
+        <p className="notice notice--warn" role="status">
+          <span className="notice__title">Audio no longer stored</span>
+          <span>
+            This recording is past the retention window, so its audio has been
+            deleted. The transcript and summary below are kept indefinitely.
+          </span>
+        </p>
+      )}
+
+      {slices.length > 1 ? (
+        <p className="transcript__hint meta">
+          Part {sliceIndex + 1} of {slices.length} · selecting a line moves
+          between parts automatically
+        </p>
+      ) : null}
 
       {hasSegments ? (
         <>
           <p className="transcript__hint meta">
-            {segments!.length} segments · select any line to play from there
+            {segments!.length} segments
+            {audioAvailable ? " · select any line to play from there" : ""}
           </p>
           <ol
             className="segments"
@@ -103,11 +255,29 @@ export function TranscriptPlayer({
                 <button
                   type="button"
                   className="segment__button"
+                  disabled={!audioAvailable}
                   onClick={() => seek(segment.start_time)}
                 >
                   <span className="segment__time">{clock(segment.start_time)}</span>
                   {diarize && segment.speaker_id != null ? (
-                    <span className={`segment__speaker segment__speaker--${segment.speaker_id}`}>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Speaker ${segment.speaker_id}. Reassign from here.`}
+                      title="Wrong speaker? Reassign from here onwards."
+                      className={`segment__speaker segment__speaker--${segment.speaker_id}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (!relabelling) void relabel(index);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          if (!relabelling) void relabel(index);
+                        }
+                      }}
+                    >
                       S{segment.speaker_id}
                     </span>
                   ) : null}

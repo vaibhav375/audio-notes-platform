@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db";
+import type { Segment } from "@/lib/db/schema";
 
 /**
  * Full-text search across stored transcripts and summaries.
@@ -25,6 +26,8 @@ export type SearchHit = {
    */
   snippet: string;
   rank: number;
+  /** Where in the recording the match was spoken, when it can be located. */
+  atSeconds: number | null;
 };
 
 /** Deliberately not HTML. See SearchHit.snippet. */
@@ -56,6 +59,7 @@ export async function searchNotes(query: string, limit = 25): Promise<SearchHit[
     created_at: string;
     snippet: string;
     rank: number;
+    segments: Segment[] | null;
   }>(sql`
     SELECT
       id,
@@ -69,7 +73,8 @@ export async function searchNotes(query: string, limit = 25): Promise<SearchHit[
         ${q},
         ${`StartSel=${HL_START}, StopSel=${HL_END}, MaxWords=34, MinWords=14, MaxFragments=2, FragmentDelimiter=" … "`}
       ) AS snippet,
-      ts_rank(${DOCUMENT}, ${q}) AS rank
+      ts_rank(${DOCUMENT}, ${q}) AS rank,
+      segments
     FROM notes
     WHERE ${DOCUMENT} @@ ${q}
     ORDER BY rank DESC, created_at DESC
@@ -85,5 +90,66 @@ export async function searchNotes(query: string, limit = 25): Promise<SearchHit[
     createdAt: new Date(row.created_at).toISOString(),
     snippet: row.snippet ?? "",
     rank: Number(row.rank ?? 0),
+    atSeconds: locateMatch(row.segments, trimmed),
   }));
+}
+
+/**
+ * Finds where a match was spoken.
+ *
+ * Postgres ranks the recording; the timings are what make a hit useful, so the
+ * first segment containing any search term becomes the deep link target. Doing
+ * this here rather than in SQL keeps the query one index scan.
+ */
+export function locateMatch(
+  segments: Segment[] | null | undefined,
+  query: string,
+): number | null {
+  if (!segments?.length) return null;
+
+  const terms = query
+    .toLowerCase()
+    .replace(/["']/g, " ")
+    .split(/\s+/)
+    .filter((term) => term.length > 1 && !["or", "and", "not"].includes(term))
+    .map((term) => (term.startsWith("-") ? term.slice(1) : term))
+    .filter(Boolean);
+
+  if (terms.length === 0) return null;
+
+  for (const segment of segments) {
+    const text = segment.text.toLowerCase();
+    if (terms.some((term) => text.includes(term))) {
+      return Math.max(0, Math.floor(segment.start_time));
+    }
+  }
+  return null;
+}
+
+/** One run of text from a search excerpt; `marked` runs are the query matches. */
+export type SnippetPart = { text: string; marked: boolean };
+
+/**
+ * Splits a sentinel-wrapped excerpt into plain runs. Kept out of the component
+ * so it can be tested directly, and so nothing is ever handed to the DOM as
+ * HTML.
+ */
+export function splitSnippet(snippet: string): SnippetPart[] {
+  const parts: SnippetPart[] = [];
+  for (const [index, chunk] of snippet.split(HL_START).entries()) {
+    if (index === 0) {
+      if (chunk) parts.push({ text: chunk, marked: false });
+      continue;
+    }
+    const end = chunk.indexOf(HL_END);
+    if (end === -1) {
+      if (chunk) parts.push({ text: chunk, marked: false });
+      continue;
+    }
+    const marked = chunk.slice(0, end);
+    const rest = chunk.slice(end + HL_END.length);
+    if (marked) parts.push({ text: marked, marked: true });
+    if (rest) parts.push({ text: rest, marked: false });
+  }
+  return parts;
 }

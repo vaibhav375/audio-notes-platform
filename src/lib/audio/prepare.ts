@@ -25,6 +25,16 @@ const TARGET_SAMPLE_RATE = 16_000;
 const MIN_BITRATE_KBPS = 24;
 const MAX_BITRATE_KBPS = 64;
 
+/**
+ * Longest slice sent as a single file.
+ *
+ * Fifteen minutes at the full 64 kbps is about 7.2 MB, comfortably inside the
+ * per-file cap. Splitting at this length means quality never has to be traded
+ * away for length: a three hour recording is encoded at exactly the same
+ * bitrate as a three minute one, just across more files.
+ */
+export const CHUNK_SECONDS = 15 * 60;
+
 /** Guard against decoding something that will exhaust browser memory. */
 export const MAX_INPUT_BYTES = 150 * 1024 * 1024;
 
@@ -49,10 +59,19 @@ export type PrepareProgress = {
   ratio: number | null;
 };
 
-export type PreparedAudio = {
+/** One uploadable slice of a recording. */
+export type PreparedPart = {
   blob: Blob;
   filename: string;
   contentType: string;
+  /** Where this slice starts within the whole recording. */
+  offsetSeconds: number;
+  durationSeconds: number;
+};
+
+export type PreparedAudio = {
+  /** Ordered slices. A short recording produces exactly one. */
+  parts: PreparedPart[];
   durationSeconds: number;
   transcoded: boolean;
   originalBytes: number;
@@ -100,12 +119,19 @@ export async function prepareAudio(
   const alreadyFits =
     file.size <= TARGET_MAX_BYTES && PASSTHROUGH_TYPES.test(file.type);
 
-  if (alreadyFits) {
+  // Short enough to send whole, and already in a format the API takes.
+  if (alreadyFits && decoded.duration <= CHUNK_SECONDS) {
     onProgress({ stage: "done", ratio: 1 });
     return {
-      blob: file,
-      filename: file.name,
-      contentType: file.type,
+      parts: [
+        {
+          blob: file,
+          filename: file.name,
+          contentType: file.type,
+          offsetSeconds: 0,
+          durationSeconds: decoded.duration,
+        },
+      ],
       durationSeconds: Math.round(decoded.duration),
       transcoded: false,
       originalBytes: file.size,
@@ -113,29 +139,70 @@ export async function prepareAudio(
   }
 
   const mono = downmixToMono(decoded);
-  const bitrate = chooseBitrate(decoded.duration);
+  const sampleRate = decoded.sampleRate;
+  const boundaries = planChunks(decoded.duration);
+  const base = replaceExtension(file.name, "").replace(/\.$/, "") || "recording";
 
-  const mp3 = await encodeMp3(mono, decoded.sampleRate, bitrate, (ratio) =>
-    onProgress({ stage: "encoding", ratio }),
-  );
+  const parts: PreparedPart[] = [];
 
-  if (mp3.size > GNANI_MAX_FILE_BYTES) {
-    throw new AudioPrepareError(
-      `Even re-encoded at ${bitrate} kbps this recording is ${formatMb(mp3.size)}, over the ${formatMb(GNANI_MAX_FILE_BYTES)} per-file limit of the transcription API.`,
-      "Split the recording into shorter parts and upload them separately.",
+  for (const [index, chunk] of boundaries.entries()) {
+    const from = Math.floor(chunk.start * sampleRate);
+    const to = Math.min(mono.length, Math.ceil(chunk.end * sampleRate));
+    const slice = mono.subarray(from, to);
+    const bitrate = chooseBitrate(chunk.end - chunk.start);
+
+    const mp3 = await encodeMp3(slice, sampleRate, bitrate, (ratio) =>
+      onProgress({
+        stage: "encoding",
+        ratio: (index + ratio) / boundaries.length,
+      }),
     );
+
+    if (mp3.size > GNANI_MAX_FILE_BYTES) {
+      throw new AudioPrepareError(
+        `A ${Math.round((chunk.end - chunk.start) / 60)} minute slice of this recording came to ${formatMb(mp3.size)} at ${bitrate} kbps, over the ${formatMb(GNANI_MAX_FILE_BYTES)} per-file limit of the transcription API.`,
+        "This should not happen; please report the file that caused it.",
+      );
+    }
+
+    parts.push({
+      blob: mp3,
+      filename:
+        boundaries.length === 1
+          ? `${base}.mp3`
+          : `${base}-part${String(index + 1).padStart(2, "0")}.mp3`,
+      contentType: "audio/mpeg",
+      offsetSeconds: chunk.start,
+      durationSeconds: chunk.end - chunk.start,
+    });
   }
 
   onProgress({ stage: "done", ratio: 1 });
 
   return {
-    blob: mp3,
-    filename: replaceExtension(file.name, "mp3"),
-    contentType: "audio/mpeg",
+    parts,
     durationSeconds: Math.round(decoded.duration),
     transcoded: true,
     originalBytes: file.size,
   };
+}
+
+/**
+ * Divides a recording into equal slices no longer than CHUNK_SECONDS.
+ *
+ * Equal lengths rather than one full slice plus a short remainder: a four
+ * second tail would be its own file, its own job entry and its own chance to
+ * fail, for no benefit.
+ */
+export function planChunks(
+  durationSeconds: number,
+): { start: number; end: number }[] {
+  const count = Math.max(1, Math.ceil(durationSeconds / CHUNK_SECONDS));
+  const length = durationSeconds / count;
+  return Array.from({ length: count }, (_, index) => ({
+    start: index * length,
+    end: index === count - 1 ? durationSeconds : (index + 1) * length,
+  }));
 }
 
 /**
@@ -200,7 +267,7 @@ function downmixToMono(buffer: AudioBuffer): Float32Array {
  * so a short file keeps good fidelity and a very long one degrades gracefully
  * instead of being rejected.
  */
-function chooseBitrate(durationSeconds: number): number {
+export function chooseBitrate(durationSeconds: number): number {
   const affordable = Math.floor((TARGET_MAX_BYTES * 8) / durationSeconds / 1000);
   return Math.max(MIN_BITRATE_KBPS, Math.min(MAX_BITRATE_KBPS, affordable));
 }

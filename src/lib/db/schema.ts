@@ -47,6 +47,19 @@ export type Segment = {
   speaker_id?: number | null;
 };
 
+/**
+ * One uploaded slice of a recording. Recordings longer than the per-file limit
+ * allows are split, so this is a list even when it holds a single entry.
+ */
+export type AudioPart = {
+  url: string;
+  pathname: string;
+  bytes: number;
+  /** Where this slice starts within the whole recording, in seconds. */
+  offsetSeconds: number;
+  durationSeconds: number;
+};
+
 export type JobProgress = {
   totalFiles: number;
   completedFiles: number;
@@ -74,9 +87,12 @@ export const notes = pgTable(
     /** Whether the user asked for two-speaker separation on this recording. */
     diarize: boolean("diarize").notNull().default(false),
 
-    // Where the audio bytes physically live.
+    // Where the audio bytes physically live. `audioUrl` is the first slice, and
+    // is the whole recording whenever there is only one.
     audioUrl: text("audio_url").notNull(),
     audioPathname: text("audio_pathname").notNull(),
+    /** Every slice, in order. Null on rows written before chunking existed. */
+    parts: jsonb("parts").$type<AudioPart[]>(),
 
     // Pipeline state.
     status: text("status").$type<NoteStatus>().notNull().default("uploaded"),

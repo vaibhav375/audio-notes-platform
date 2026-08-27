@@ -1,4 +1,4 @@
-import type { Note, Segment } from "@/lib/db/schema";
+import type { AudioPart, Note, Segment } from "@/lib/db/schema";
 import { STALL_WARNING_MS } from "@/lib/pipeline";
 
 /** Shape sent to the browser. Excludes bulky segment data from list responses. */
@@ -12,6 +12,7 @@ export type NoteView = {
   languageCode: string;
   diarize: boolean;
   audioUrl: string;
+  parts: AudioPart[] | null;
   status: Note["status"];
   gnaniJobId: string | null;
   gnaniStatus: string | null;
@@ -41,6 +42,7 @@ export function toView(note: Note, options: { withText?: boolean } = {}): NoteVi
     languageCode: note.languageCode,
     diarize: note.diarize,
     audioUrl: note.audioUrl,
+    parts: note.parts,
     status: note.status,
     gnaniJobId: note.gnaniJobId,
     gnaniStatus: note.gnaniStatus,

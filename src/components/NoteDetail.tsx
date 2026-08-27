@@ -214,7 +214,9 @@ export function NoteDetail({ initial }: { initial: NoteView }) {
         </h2>
         {note.transcript ? (
           <TranscriptPlayer
+            noteId={note.id}
             audioUrl={note.audioUrl}
+            parts={note.parts}
             segments={note.segments}
             transcript={note.transcript}
             diarize={note.diarize}

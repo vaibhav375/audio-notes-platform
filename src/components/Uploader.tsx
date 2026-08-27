@@ -53,21 +53,45 @@ export function Uploader({ onStarted }: { onStarted: () => void }) {
           setRatio(r ?? 0);
         });
 
+        const totalBytes = prepared.parts.reduce((sum, part) => sum + part.blob.size, 0);
         setDetail(
           prepared.transcoded
-            ? `Re-encoded ${formatMb(prepared.originalBytes)} to ${formatMb(prepared.blob.size)} mono MP3`
-            : `Uploading ${formatMb(prepared.blob.size)} unchanged`,
+            ? `Re-encoded ${formatMb(prepared.originalBytes)} to ${formatMb(totalBytes)} mono MP3` +
+                (prepared.parts.length > 1 ? ` across ${prepared.parts.length} parts` : "")
+            : `Uploading ${formatMb(totalBytes)} unchanged`,
         );
 
-        // 2. Upload straight to blob storage, bypassing the API request size cap.
+        // 2. Upload every slice straight to blob storage, bypassing the API
+        //    request size cap. Progress spans all of them, not each in turn.
         setPhase("uploading");
         setRatio(0);
-        const blob = await upload(prepared.filename, prepared.blob, {
-          access: "public",
-          handleUploadUrl: "/api/blob/upload",
-          contentType: prepared.contentType,
-          onUploadProgress: ({ percentage }) => setRatio(percentage / 100),
-        });
+
+        const uploaded: {
+          url: string;
+          pathname: string;
+          bytes: number;
+          offsetSeconds: number;
+          durationSeconds: number;
+        }[] = [];
+
+        let doneBytes = 0;
+        for (const part of prepared.parts) {
+          const blob = await upload(part.filename, part.blob, {
+            access: "public",
+            handleUploadUrl: "/api/blob/upload",
+            contentType: part.contentType,
+            onUploadProgress: ({ percentage }) =>
+              setRatio((doneBytes + (percentage / 100) * part.blob.size) / totalBytes),
+          });
+          doneBytes += part.blob.size;
+          uploaded.push({
+            url: blob.url,
+            pathname: blob.pathname,
+            bytes: part.blob.size,
+            offsetSeconds: part.offsetSeconds,
+            durationSeconds: part.durationSeconds,
+          });
+        }
 
         // 3. Register the note; the server creates and starts the Gnani job
         //    inside this request, so a rejection surfaces immediately.
@@ -78,12 +102,11 @@ export function Uploader({ onStarted }: { onStarted: () => void }) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            audioUrl: blob.url,
-            audioPathname: blob.pathname,
+            parts: uploaded,
             originalFilename: file.name,
             originalBytes: file.size,
-            uploadedBytes: prepared.blob.size,
-            contentType: prepared.contentType,
+            uploadedBytes: totalBytes,
+            contentType: prepared.parts[0].contentType,
             transcoded: prepared.transcoded,
             durationSeconds: prepared.durationSeconds,
             languageCode: language,

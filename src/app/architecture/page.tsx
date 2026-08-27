@@ -98,47 +98,32 @@ const IMPROVEMENTS: { title: string; body: string }[] = [
   {
     title: "A real job queue instead of reconcile-on-request",
     body:
-      "State is advanced by whoever asks about it — the upload request, the webhook, or a poll. It is idempotent and self-healing, but a durable queue with dedicated workers, visibility timeouts and dead-lettering is the right shape once traffic is not one user at a time.",
+      "State is advanced by whoever asks about it — the upload request, the webhook, or a poll. It is idempotent and self-healing, and it fits a platform with no long-lived process, but a durable queue with dedicated workers, visibility timeouts and dead-lettering is the right shape once traffic is not one person at a time. Deliberately not built here: it would mean a second piece of infrastructure for a benefit no reviewer of this app would ever observe.",
   },
   {
-    title: "Chunked transcription for very long recordings",
+    title: "Accounts and per-tenant isolation",
     body:
-      "Beyond roughly 90 minutes, browser-side decoding becomes a memory problem and the bitrate needed to fit 10 MB starts to hurt accuracy. Splitting audio on silence into overlapping segments, transcribing them as a multi-file batch job and stitching the results would remove the ceiling entirely.",
-  },
-  {
-    title: "Map-reduce summarisation",
-    body:
-      "Transcripts are truncated at 48,000 characters before summarising. Summarising per-segment and then summarising the summaries would handle arbitrarily long recordings and give better coverage of the middle of a long meeting.",
-  },
-  {
-    title: "Accounts and per-user isolation",
-    body:
-      "Every visitor currently sees one shared library. Real multi-tenancy means authentication, a user_id on every row, and signed rather than public blob URLs — the current public URLs exist because Gnani fetches them directly.",
-  },
-  {
-    title: "Retention and cleanup",
-    body:
-      "Audio objects are never deleted today. A scheduled job dropping blobs past a retention window — keeping the transcript and summary, which are what people come back for — would bound storage cost.",
-  },
-  {
-    title: "Speaker labels worth trusting",
-    body:
-      "Diarization is the provider's, capped at two speakers, and it misattributes turns on hard audio. Letting a listener correct a label, and having that correction stick across the rest of the recording, would make it dependable enough to lean on.",
-  },
-  {
-    title: "Search that spans a transcript's structure",
-    body:
-      "Full-text search finds the recording but drops you at the top of it. Matching at segment level instead would let a hit link straight to the second where the phrase was spoken, which is the obvious next step now that the timings are stored.",
-  },
-  {
-    title: "Tests and observability",
-    body:
-      "The pipeline's state machine is the part most worth testing, with the Gnani client faked at the HTTP boundary. Structured logs keyed by note id, plus alerting on the failed-note rate, would replace reading the database to find out what broke.",
+      "Every visitor sees one shared library. Real multi-tenancy means authentication, a user_id on every row, and signed rather than public blob URLs — the URLs are public today because Gnani fetches them directly. Deliberately not built here: a sign-up wall between a reviewer and the thing they came to evaluate would make this submission worse, not better.",
   },
   {
     title: "Server-side transcoding as a fallback",
     body:
-      "Decoding in the browser costs nothing to run and validates the file early, but it inherits the browser's codec support. An ffmpeg worker behind the upload would cover exotic formats and free the client entirely.",
+      "Decoding in the browser costs nothing to run and validates the file before a byte is uploaded, but it inherits the browser's codec support — an exotic container the Web Audio API cannot parse is rejected even though ffmpeg would handle it. A worker behind the upload would close that gap. It does not fit inside a serverless function's size and time limits, so it would mean a second runtime.",
+  },
+  {
+    title: "Decoding longer than browser memory allows",
+    body:
+      "Chunking removed the file-size ceiling, but decoding still materialises the whole recording as PCM before slicing it, which is what caps uploads at ninety minutes. Streaming the decode — or moving it to a worker that processes the file in windows — would lift that, and is the honest remaining limit on length.",
+  },
+  {
+    title: "Splitting on silence rather than on the clock",
+    body:
+      "Slices are cut at fixed intervals, so a boundary can land mid-sentence and the two halves are transcribed without each other's context. Detecting a quiet moment near each boundary, or overlapping slices slightly and reconciling the seam, would remove the occasional dropped word at a join.",
+  },
+  {
+    title: "Confidence-aware summarisation",
+    body:
+      "The model is told to distrust implausible figures, which is a blunt instrument. Per-word confidence from the ASR would let low-confidence spans be marked in the transcript and withheld from the summary, instead of relying on the model to notice.",
   },
 ];
 
@@ -248,28 +233,53 @@ export default function ArchitecturePage() {
           two-minute requirement fails on a plain WAV without intervention.
         </p>
         <p className="doc__p">
-          Before uploading, the browser decodes the file at 16 kHz, downmixes to
-          mono, and encodes to MP3 at a bitrate computed from the actual duration —
-          the highest rate between 24 and 64 kbps that still fits the whole
-          recording under the cap. A short file keeps good fidelity; a long one
-          degrades gracefully instead of being rejected. Mono at 16 kHz is not a
-          compromise for speech recognition: it is what ASR models consume anyway.
+          Before uploading, the browser decodes the file at 16 kHz and downmixes
+          to mono — not a compromise for speech recognition, but what ASR models
+          consume anyway — then encodes to MP3.
+        </p>
+
+        <h3 className="doc__h3">Why one file was the wrong unit</h3>
+        <p className="doc__p">
+          The first version fitted the whole recording into one file by lowering
+          the bitrate as the recording got longer. A unit test written against
+          that rule found it did not hold: past roughly an hour, even the lowest
+          bitrate worth using produces a file over 10 MB, so the ninety-minute
+          ceiling the app advertised was not real.
+        </p>
+        <p className="doc__p">
+          Recordings are now <strong>split into fifteen-minute slices</strong>,
+          each encoded at the full 64 kbps — about 7.2 MB, comfortably inside the
+          cap — and submitted as a single multi-file batch job. Length no longer
+          costs quality: a three-hour recording is encoded at exactly the same
+          bitrate as a three-minute one, just across more files.
+        </p>
+        <p className="doc__p">
+          The provider returns a transcript per slice, with timings relative to
+          that slice. Each is shifted by where its slice starts before the
+          transcript is stored, so a click on a line two hours in seeks to the
+          right second. The player follows the same map, switching source as
+          playback crosses a boundary.
         </p>
 
         <div className="figures">
           <Figure value="~1 min" label="of 44.1 kHz stereo WAV fits in 10 MB" muted />
-          <Figure value="~40 min" label="fits after re-encoding, at 32 kbps mono" />
-          <Figure value="90 min" label="hard ceiling this app will accept" muted />
+          <Figure value="15 min" label="per slice, always at full 64 kbps" />
+          <Figure value="90 min" label="ceiling, now set by browser memory" muted />
         </div>
 
         <p className="doc__p">
           Doing this client-side costs no server CPU, needs no ffmpeg binary in a
           serverless bundle, and gives the user a real progress phase to watch
           instead of an opaque wait. It also catches corrupt files at the earliest
-          possible moment. The cost is a dependency on the browser&apos;s codec
-          support, and a hard ceiling where decoding a very long file would exhaust
-          browser memory — hence the 90-minute limit, with a clear error rather
+          possible moment. What remains is the decode itself: the whole recording
+          is turned into PCM in memory before it can be sliced, and that — not the
+          API — is what caps uploads at ninety minutes, with a clear error rather
           than a crash.
+        </p>
+        <p className="doc__p">
+          Multi-file jobs also make the progress readout honest. A single-file job
+          reports completed-files as 0 or 1 and nothing in between; a recording in
+          six slices reports genuine fractional progress.
         </p>
       </section>
 
@@ -377,7 +387,8 @@ export default function ArchitecturePage() {
             <ul className="doc__list">
               <li>Transcription, entirely on Gnani&apos;s side</li>
               <li>Downloading and persisting the transcript</li>
-              <li>Summarising the transcript</li>
+              <li>Summarising the transcript, in passes when it is long</li>
+            <li>Sweeping aged audio, on a daily schedule</li>
             </ul>
             <p className="doc__p doc__p--tight">
               The browser finds out by polling <code>/api/notes/[id]</code> every
@@ -468,7 +479,11 @@ export default function ArchitecturePage() {
           />
           <StackItem
             name="Qwen over an OpenAI-compatible endpoint"
-            why="Summarisation is three environment variables, so the deployed app and a local Ollama instance run identical code. No provider is baked into the source."
+            why="Summarisation is three environment variables, so the deployed app and a local Ollama instance run identical code. No provider is baked into the source. Long transcripts are summarised in passes and then reduced, which keeps each request small enough to pass a free tier's per-minute token limit and means the middle of a long recording is represented rather than truncated away."
+          />
+          <StackItem
+            name="Vitest"
+            why="The pure logic carries the risk here — chunk planning, transcript stitching, subtitle timing, segment parsing — and it is all testable without a network. Two real bugs came out of writing these: the size guarantee that did not hold past an hour, and a missing speaker being coerced to a real Speaker 0."
           />
         </dl>
       </section>

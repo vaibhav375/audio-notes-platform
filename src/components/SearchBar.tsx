@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { HL_END, HL_START, type SearchHit } from "@/lib/search";
+import { splitSnippet, type SearchHit } from "@/lib/search";
 import { formatDuration, formatWhen } from "@/lib/status";
 
 /**
@@ -12,19 +12,19 @@ import { formatDuration, formatWhen } from "@/lib/status";
  * mentioned this?" months later, and a list ordered by date cannot do that.
  */
 /**
- * Turns the sentinel-wrapped excerpt into elements. Nothing is ever treated as
- * HTML, so a transcript containing markup renders as the text it is.
+ * Renders a search excerpt. Nothing is ever treated as HTML, so a transcript
+ * containing markup renders as the text it is.
  */
 function highlight(snippet: string): React.ReactNode[] {
-  return snippet.split(HL_START).flatMap((chunk, index) => {
-    if (index === 0) return chunk ? [chunk] : [];
-    const [marked, ...rest] = chunk.split(HL_END);
-    const tail = rest.join(HL_END);
-    return [
-      <mark key={`m${index}`}>{marked}</mark>,
-      ...(tail ? [tail] : []),
-    ];
-  });
+  return splitSnippet(snippet).map((part, index) =>
+    part.marked ? <mark key={index}>{part.text}</mark> : part.text,
+  );
+}
+
+function clock(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 export function SearchBar() {
@@ -105,10 +105,20 @@ export function SearchBar() {
         <ul className="hits">
           {hits.map((hit) => (
             <li key={hit.id}>
-              <Link href={`/notes/${hit.id}`} className="hit card">
+              <Link
+                href={
+                  hit.atSeconds != null
+                    ? `/notes/${hit.id}?t=${hit.atSeconds}`
+                    : `/notes/${hit.id}`
+                }
+                className="hit card"
+              >
                 <div className="hit__head">
                   <span className="hit__name">{hit.originalFilename}</span>
                   <span className="meta">
+                    {hit.atSeconds != null ? (
+                      <span className="hit__at">at {clock(hit.atSeconds)}</span>
+                    ) : null}
                     {formatDuration(hit.durationSeconds)} · {hit.languageCode} ·{" "}
                     {formatWhen(hit.createdAt)}
                   </span>

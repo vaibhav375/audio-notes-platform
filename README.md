@@ -24,7 +24,15 @@ be reopened at any time.
   excerpts. Works in Devanagari as well as Latin scripts.
 - **Exports** — timestamped text, Markdown, and SRT/WebVTT subtitles built from
   the real segment timings.
-- **Optional two-speaker separation** for interviews and support calls.
+- **Optional two-speaker separation** for interviews and support calls, with
+  labels you can correct when the provider gets them wrong.
+- **Long recordings are split into slices** and submitted as one multi-file job,
+  so length never costs audio quality; transcripts are stitched back together
+  with their timings realigned.
+- **Summaries in passes** for long transcripts — mapped per section, then
+  reduced — so nothing is truncated away.
+- **Scheduled cleanup** deletes audio past a retention window and keeps the
+  transcript and summary.
 
 The engineering reasoning behind these choices lives on the `/architecture`
 page of the running app. This file is for getting it running locally.
@@ -86,6 +94,16 @@ npm run dev
 
 Open <http://localhost:3000>.
 
+### 5. Tests
+
+```bash
+npm test
+```
+
+Covers the logic that carries the risk and needs no network: chunk planning,
+transcript stitching, subtitle timing, segment parsing, summarisation passes and
+search-excerpt handling.
+
 ## Summarising with a local model
 
 Summarisation talks to any OpenAI-compatible `/chat/completions` endpoint, so a
@@ -134,7 +152,17 @@ configuration. It needs, in the project's environment variables: `DATABASE_URL`,
 is injected automatically once a Blob store is attached to the project.
 
 Run `npm run db:push` against the production `DATABASE_URL` once, to create the
-table.
+table, then create the search index:
+
+```sql
+CREATE INDEX IF NOT EXISTS notes_fts_idx ON notes
+USING GIN (to_tsvector('simple',
+  coalesce(transcript, '') || ' ' || coalesce(summary, '') || ' ' || original_filename));
+```
+
+`vercel.json` schedules the daily retention sweep at `/api/cron/cleanup`. It can
+also be run by hand with `?secret=$GNANI_WEBHOOK_SECRET`, and inspected without
+deleting anything using `&dryRun=1`.
 
 ## Notes
 
