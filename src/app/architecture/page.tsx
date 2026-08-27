@@ -252,26 +252,30 @@ export default function ArchitecturePage() {
           three-hour recording is encoded at exactly the same bitrate as a
           three-minute one, just across more slices.
         </p>
-        <h3 className="doc__h3">One job per slice, because many files per job does not work</h3>
+        <h3 className="doc__h3">One job per slice, and a note on why</h3>
         <p className="doc__p">
-          The batch API documents up to 100 files per job, and the obvious design
-          is one job holding every slice. That design does not work. A two-file
-          job is cancelled with <code>ReadTimeout</code> every single time, and
-          it makes no difference whether the files are pulled from blob storage
-          or posted directly in the request — both fail identically, while the
-          same files submitted one at a time always succeed.
+          Each slice is submitted as <strong>its own job</strong>, rather than
+          one job holding every slice as the API&apos;s hundred-files-per-job
+          limit would allow. Single-file jobs are the shape that has been
+          reliable throughout, so they are the unit.
         </p>
         <p className="doc__p">
-          So each slice gets <strong>its own job</strong>. It is more bookkeeping
-          — several jobs to create, poll and gather — but it is built on the only
-          path that is actually reliable, rather than the one the documentation
-          describes. Slices are five minutes rather than fifteen for the same
-          reason: about 2.4 MB fetches quickly and comfortably, and there is no
-          reason to sit near a limit that has already proven fragile.
+          The honest version of how that decision was reached: multi-file jobs
+          failed repeatedly with <code>ReadTimeout</code> during testing, and the
+          apparent conclusion was that the documented behaviour simply did not
+          work. It later turned out the account was <strong>rate limited</strong>
+          — a start call returned <code>RATE_LIMITED</code> outright — and single
+          file jobs were failing by then too. So the multi-file result is not a
+          finding, it is a measurement taken through a confound, and it is
+          recorded here as such rather than dressed up as an API quirk.
         </p>
         <p className="doc__p">
-          Finding this needed measurement, not reading. It is the second place in
-          this project where the written API and the running API disagreed.
+          What the episode did establish is that this API answers pressure with
+          <code>START_FAILED</code> and a read timeout, which says nothing about
+          the audio. Treating that as a terminal error told users their file was
+          corrupt when it was not. It is now treated as transient: the job is
+          resubmitted, up to four times, ninety seconds apart, and only a
+          genuinely non-transient reason fails the note.
         </p>
         <p className="doc__p">
           The provider returns a transcript per slice, with timings relative to
@@ -301,6 +305,11 @@ export default function ArchitecturePage() {
           reports its file as 0 or 1 complete and nothing in between; a recording
           in six slices reports six jobs finishing, which is genuine fractional
           progress.
+        </p>
+        <p className="doc__p">
+          Slices are five minutes rather than fifteen for a related reason: about
+          2.4 MB fetches quickly, and there is no reason to sit near a limit that
+          has already proven fragile under load.
         </p>
       </section>
 

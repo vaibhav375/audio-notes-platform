@@ -124,6 +124,8 @@ export const notes = pgTable(
     errorMessage: text("error_message"),
     /** Summarisation attempts so far, so transient retries stay bounded. */
     summaryAttempts: integer("summary_attempts").notNull().default(0),
+    /** Transcription attempts, for retrying a provider-side start failure. */
+    transcriptionAttempts: integer("transcription_attempts").notNull().default(0),
     failureStage: text("failure_stage").$type<FailureStage>(),
 
     createdAt: timestamp("created_at", { withTimezone: true })

@@ -48,6 +48,8 @@ export type GnaniJob = {
   progress?: GnaniProgress;
   message?: string;
   error_message?: string;
+  /** Where this API reports why a job was stopped, e.g. "ReadTimeout: ". */
+  cancel_reason?: string | null;
 };
 
 export type GnaniJobFile = {

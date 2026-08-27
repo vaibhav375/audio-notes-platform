@@ -60,6 +60,8 @@ export async function POST(_request: Request, context: Context): Promise<Respons
         errorMessage: null,
         failureStage: null,
         summaryAttempts: 0,
+        transcriptionAttempts: 0,
+        jobs: null,
         lastPolledAt: null,
         createdAt: new Date(),
         updatedAt: new Date(),

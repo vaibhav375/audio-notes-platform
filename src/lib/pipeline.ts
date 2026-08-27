@@ -44,6 +44,23 @@ export const STALL_FAILURE_MS = 30 * 60 * 1000;
  */
 export const MAX_SUMMARY_ATTEMPTS = 6;
 
+/**
+ * How many times transcription is resubmitted after a provider-side start
+ * failure. START_FAILED with a read timeout is not a statement about the audio
+ * — it is what this API returns when it is rate limiting or briefly unwell, and
+ * the same file submitted again later goes through.
+ */
+export const MAX_TRANSCRIPTION_ATTEMPTS = 4;
+
+/** Wait between resubmissions, so a retry cannot make rate limiting worse. */
+const RETRY_BACKOFF_MS = 90_000;
+
+/** Provider-side conditions that say nothing about the file itself. */
+function looksTransient(reason: string | null | undefined): boolean {
+  if (!reason) return true;
+  return /timeout|rate|throttl|temporar|unavailable|capacity|try again/i.test(reason);
+}
+
 async function patch(id: string, values: Partial<Note>): Promise<Note> {
   const [row] = await db()
     .update(notes)
@@ -137,6 +154,23 @@ export async function beginTranscription(note: Note): Promise<Note> {
     });
   } catch (error) {
     if (error instanceof GnaniError) {
+      // Rate limiting during submission is worth waiting out, not failing on.
+      if (
+        error.status === 429 &&
+        note.transcriptionAttempts < MAX_TRANSCRIPTION_ATTEMPTS
+      ) {
+        log.warn("note.submit_rate_limited", {
+          noteId: note.id,
+          attempt: note.transcriptionAttempts + 1,
+        });
+        return patch(note.id, {
+          status: "uploaded",
+          jobs: null,
+          gnaniJobId: null,
+          transcriptionAttempts: note.transcriptionAttempts + 1,
+          lastPolledAt: new Date(),
+        });
+      }
       return fail(note.id, "transcription", describeGnaniError(error));
     }
     return fail(
@@ -245,14 +279,48 @@ async function pollTranscription(note: Note): Promise<Note> {
 
   if (broken.length > 0) {
     const first = broken[0];
+    const reason =
+      first.error_message ?? first.cancel_reason ?? first.message ?? null;
+
+    // A start failure is usually the provider rate limiting or briefly unwell,
+    // not a bad file. Resubmit rather than telling the user their audio is
+    // corrupt, which is both wrong and unactionable.
+    const retryable =
+      first.status === "START_FAILED" &&
+      looksTransient(reason) &&
+      note.transcriptionAttempts < MAX_TRANSCRIPTION_ATTEMPTS;
+
+    if (retryable) {
+      const since = note.lastPolledAt
+        ? Date.now() - new Date(note.lastPolledAt).getTime()
+        : Number.MAX_SAFE_INTEGER;
+      if (since < RETRY_BACKOFF_MS) return note;
+
+      log.warn("note.transcription_retrying", {
+        noteId: note.id,
+        attempt: note.transcriptionAttempts + 1,
+        reason: reason ?? "unknown",
+      });
+
+      // Back to `uploaded` so the next reconcile creates fresh jobs.
+      return patch(note.id, {
+        status: "uploaded",
+        jobs: null,
+        gnaniJobId: null,
+        gnaniStatus: null,
+        transcriptionAttempts: note.transcriptionAttempts + 1,
+        lastPolledAt: new Date(),
+      });
+    }
+
     return fail(
       note.id,
       "transcription",
-      first.error_message ??
-        first.message ??
-        (states.length > 1
+      reason
+        ? `Gnani could not transcribe this recording: ${reason.trim() || first.status}`
+        : states.length > 1
           ? `Transcription failed on one of the ${states.length} parts of this recording.`
-          : "Gnani could not transcribe this recording. The file may be corrupt or in an unsupported format."),
+          : "Gnani could not transcribe this recording. The file may be corrupt or in an unsupported format.",
     );
   }
 
