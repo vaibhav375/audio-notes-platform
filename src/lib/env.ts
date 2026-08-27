@@ -62,7 +62,7 @@ export const env = {
     return required("LLM_API_KEY");
   },
   get llmModel() {
-    return process.env.LLM_MODEL ?? "qwen/qwen3-32b";
+    return process.env.LLM_MODEL ?? "qwen/qwen3.8-27b";
   },
 
   get repoUrl() {

@@ -62,7 +62,7 @@ Fill in the values:
 | `APP_ORIGIN` | no | Public origin used to build the webhook URL. Set automatically on Vercel. |
 | `LLM_BASE_URL` | no | Defaults to Groq's OpenAI-compatible endpoint. |
 | `LLM_API_KEY` | yes | Key for whichever endpoint `LLM_BASE_URL` points at. |
-| `LLM_MODEL` | no | Defaults to `qwen/qwen3-32b`. |
+| `LLM_MODEL` | no | Defaults to `qwen/qwen3.8-27b`. |
 | `NEXT_PUBLIC_REPO_URL` | no | Shown on the `/architecture` page. |
 
 ### 3. Create the schema
