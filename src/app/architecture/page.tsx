@@ -248,18 +248,30 @@ export default function ArchitecturePage() {
         </p>
         <p className="doc__p">
           Recordings are now <strong>split into five-minute slices</strong>,
-          each encoded at the full 64 kbps and submitted as one multi-file batch
-          job. Length no longer costs quality: a three-hour recording is encoded
-          at exactly the same bitrate as a three-minute one, just across more
-          slices.
+          each encoded at the full 64 kbps. Length no longer costs quality: a
+          three-hour recording is encoded at exactly the same bitrate as a
+          three-minute one, just across more slices.
+        </p>
+        <h3 className="doc__h3">One job per slice, because many files per job does not work</h3>
+        <p className="doc__p">
+          The batch API documents up to 100 files per job, and the obvious design
+          is one job holding every slice. That design does not work. A two-file
+          job is cancelled with <code>ReadTimeout</code> every single time, and
+          it makes no difference whether the files are pulled from blob storage
+          or posted directly in the request — both fail identically, while the
+          same files submitted one at a time always succeed.
         </p>
         <p className="doc__p">
-          The slice length is set by what the provider can fetch, not by what the
-          10 MB cap allows. It pulls each slice from blob storage itself, and its
-          storage is in a different region from ours: a job of four 5 MB slices
-          was cancelled outright with a read timeout, before a single file had
-          finished downloading. Five minutes comes to about 2.4 MB, which arrives
-          comfortably inside that timeout.
+          So each slice gets <strong>its own job</strong>. It is more bookkeeping
+          — several jobs to create, poll and gather — but it is built on the only
+          path that is actually reliable, rather than the one the documentation
+          describes. Slices are five minutes rather than fifteen for the same
+          reason: about 2.4 MB fetches quickly and comfortably, and there is no
+          reason to sit near a limit that has already proven fragile.
+        </p>
+        <p className="doc__p">
+          Finding this needed measurement, not reading. It is the second place in
+          this project where the written API and the running API disagreed.
         </p>
         <p className="doc__p">
           The provider returns a transcript per slice, with timings relative to
@@ -285,9 +297,10 @@ export default function ArchitecturePage() {
           than a crash.
         </p>
         <p className="doc__p">
-          Multi-file jobs also make the progress readout honest. A single-file job
-          reports completed-files as 0 or 1 and nothing in between; a recording in
-          six slices reports genuine fractional progress.
+          Running a job per slice also makes the progress readout honest. One job
+          reports its file as 0 or 1 complete and nothing in between; a recording
+          in six slices reports six jobs finishing, which is genuine fractional
+          progress.
         </p>
       </section>
 

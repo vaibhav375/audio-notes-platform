@@ -1,6 +1,11 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { notes, type JobProgress, type Note, type Segment } from "@/lib/db/schema";
+import {
+  notes,
+  type Note,
+  type Segment,
+  type SliceJob,
+} from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import {
   createJob,
@@ -12,7 +17,6 @@ import {
   parseDuration,
   startJob,
   type GnaniJobFile,
-  type GnaniProgress,
 } from "@/lib/gnani";
 import { LlmError, summariseTranscript } from "@/lib/llm";
 import { log } from "@/lib/log";
@@ -62,17 +66,6 @@ async function fail(
   });
 }
 
-function normaliseProgress(progress?: GnaniProgress): JobProgress | null {
-  if (!progress) return null;
-  return {
-    totalFiles: progress.total_files ?? 0,
-    completedFiles: progress.completed_files ?? 0,
-    failedFiles: progress.failed_files ?? 0,
-    inProgressFiles: progress.in_progress_files ?? 0,
-    queuedFiles: progress.queued_files ?? 0,
-  };
-}
-
 /** Every slice of a recording, in order. Falls back for pre-chunking rows. */
 function audioUrlsFor(note: Note): string[] {
   if (note.parts?.length) {
@@ -98,32 +91,48 @@ function callbackUrl(): string | null {
  */
 export async function beginTranscription(note: Note): Promise<Note> {
   try {
-    const job = await createJob({
-      audioUrls: audioUrlsFor(note),
-      languageCode: note.languageCode,
-      callbackUrl: callbackUrl(),
-      diarize: note.diarize,
-    });
+    const urls = audioUrlsFor(note);
+    const jobs: SliceJob[] = [];
 
-    await patch(note.id, {
-      gnaniJobId: job.job_id,
-      gnaniStatus: job.status,
-      status: "transcribing",
-    });
+    // One job per slice. The batch API advertises many files per job, but a
+    // two-file job is cancelled with a read timeout every time, whether the
+    // files are pulled from storage or posted directly. Single-file jobs are
+    // reliable, so that is the unit.
+    for (const [partIndex, url] of urls.entries()) {
+      const job = await createJob({
+        audioUrls: [url],
+        languageCode: note.languageCode,
+        callbackUrl: callbackUrl(),
+        diarize: note.diarize,
+      });
+      // A created job sits idle until it is explicitly started.
+      const started = await startJob(job.job_id);
+      jobs.push({
+        jobId: job.job_id,
+        partIndex,
+        status: started.status ?? job.status,
+      });
+    }
 
-    // A created job sits idle until it is explicitly started.
-    const started = await startJob(job.job_id);
-    log.info("note.job_started", {
+    log.info("note.jobs_started", {
       noteId: note.id,
-      jobId: job.job_id,
-      files: audioUrlsFor(note).length,
+      jobs: jobs.length,
       language: note.languageCode,
       diarize: note.diarize,
     });
 
     return patch(note.id, {
-      gnaniStatus: started.status ?? job.status,
-      progress: normaliseProgress(started.progress),
+      jobs,
+      gnaniJobId: jobs[0]?.jobId ?? null,
+      gnaniStatus: jobs[0]?.status ?? null,
+      status: "transcribing",
+      progress: {
+        totalFiles: jobs.length,
+        completedFiles: 0,
+        failedFiles: 0,
+        inProgressFiles: jobs.length,
+        queuedFiles: 0,
+      },
       lastPolledAt: new Date(),
     });
   } catch (error) {
@@ -181,12 +190,17 @@ export async function reconcileNote(input: Note): Promise<Note> {
 }
 
 async function pollTranscription(note: Note): Promise<Note> {
-  const jobId = note.gnaniJobId;
-  if (!jobId) return note;
+  const sliceJobs = note.jobs?.length
+    ? note.jobs
+    : note.gnaniJobId
+      ? [{ jobId: note.gnaniJobId, partIndex: 0, status: note.gnaniStatus }]
+      : [];
 
-  let job;
+  if (sliceJobs.length === 0) return note;
+
+  let states;
   try {
-    job = await getJob(jobId);
+    states = await Promise.all(sliceJobs.map((slice) => getJob(slice.jobId)));
   } catch (error) {
     // A transient polling failure should not destroy an in-flight job; leave the
     // note alone and let the next poll try again, unless we have waited absurdly
@@ -203,33 +217,56 @@ async function pollTranscription(note: Note): Promise<Note> {
     );
   }
 
-  const progress = normaliseProgress(job.progress);
+  // Progress across slices is real progress: a recording in four slices reports
+  // genuine quarters, which a single job never could.
+  const completed = states.filter((s) => s.status === "COMPLETED").length;
+  const broken = states.filter(
+    (s) => s.status === "FAILED" || s.status === "START_FAILED" || s.status === "CANCELLED",
+  );
+  const queued = states.filter(
+    (s) => (s.progress?.queued_files ?? 0) > 0 && (s.progress?.in_progress_files ?? 0) === 0,
+  ).length;
+
   note = await patch(note.id, {
-    gnaniStatus: job.status,
-    progress,
+    jobs: sliceJobs.map((slice, index) => ({
+      ...slice,
+      status: states[index].status,
+    })),
+    gnaniStatus: states[0].status,
+    progress: {
+      totalFiles: states.length,
+      completedFiles: completed,
+      failedFiles: broken.length,
+      inProgressFiles: states.length - completed - broken.length - queued,
+      queuedFiles: queued,
+    },
     lastPolledAt: new Date(),
   });
 
-  if (!isTerminal(job.status)) return expireIfStuck(note);
-
-  if (job.status === "FAILED" || job.status === "START_FAILED") {
+  if (broken.length > 0) {
+    const first = broken[0];
     return fail(
       note.id,
       "transcription",
-      job.error_message ??
-        job.message ??
-        "Gnani could not transcribe this recording. The file may be corrupt or in an unsupported format.",
+      first.error_message ??
+        first.message ??
+        (states.length > 1
+          ? `Transcription failed on one of the ${states.length} parts of this recording.`
+          : "Gnani could not transcribe this recording. The file may be corrupt or in an unsupported format."),
     );
   }
 
-  if (job.status === "CANCELLED") {
-    return fail(note.id, "transcription", "The transcription job was cancelled.");
+  if (!states.every((state) => isTerminal(state.status))) {
+    return expireIfStuck(note);
   }
 
-  // COMPLETED or PARTIAL_FAILURE: inspect the per-file result.
-  let files;
+  // Every slice is terminal and none failed: gather the per-slice results.
+  let files: GnaniJobFile[];
   try {
-    files = await getJobFiles(jobId);
+    const perJob = await Promise.all(
+      sliceJobs.map((slice) => getJobFiles(slice.jobId)),
+    );
+    files = perJob.map((entries) => entries[0]).filter(Boolean);
   } catch (error) {
     if (error instanceof GnaniError && error.retryable) return expireIfStuck(note);
     throw error;
@@ -243,7 +280,8 @@ async function pollTranscription(note: Note): Promise<Note> {
     );
   }
 
-  const ordered = orderFiles(files, note);
+  // One file per slice, gathered in slice order already.
+  const ordered = files;
 
   const missing = ordered.find((file) => !file.transcript_url);
   if (missing) {
@@ -422,35 +460,6 @@ export async function runSummary(note: Note): Promise<Note> {
  * Keeps only the fields the UI uses. Provider payloads carry several keys that
  * come back null on every request, and storing them would bloat every row.
  */
-/**
- * Puts the provider's files back into recording order.
- *
- * A multi-file job may return files in any order, so they are matched to the
- * uploaded slices by filename and fall back to the provider's own ordering.
- */
-function orderFiles(files: GnaniJobFile[], note: Note): GnaniJobFile[] {
-  if (!note.parts?.length || files.length <= 1) return files;
-
-  const rank = new Map<string, number>();
-  [...note.parts]
-    .sort((a, b) => a.offsetSeconds - b.offsetSeconds)
-    .forEach((part, index) => {
-      // Blob pathnames carry a random suffix; the basename is what the provider
-      // echoes back in original_path.
-      rank.set(basename(part.pathname), index);
-    });
-
-  return [...files].sort((a, b) => {
-    const ra = rank.get(basename(a.original_path ?? "")) ?? Number.MAX_SAFE_INTEGER;
-    const rb = rank.get(basename(b.original_path ?? "")) ?? Number.MAX_SAFE_INTEGER;
-    return ra - rb;
-  });
-}
-
-function basename(path: string): string {
-  return path.split("/").pop() ?? path;
-}
-
 /** Start time of each file within the whole recording. */
 function offsetsFor(files: GnaniJobFile[], note: Note): number[] {
   const parts = note.parts?.length

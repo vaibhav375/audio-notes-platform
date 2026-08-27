@@ -60,6 +60,18 @@ export type AudioPart = {
   durationSeconds: number;
 };
 
+/**
+ * One provider job. A recording split into slices gets one job per slice: the
+ * batch API documents up to 100 files per job, but a two-file job fails every
+ * time with a read timeout, while single-file jobs are reliable.
+ */
+export type SliceJob = {
+  jobId: string;
+  /** Index of the slice in `parts` this job transcribes. */
+  partIndex: number;
+  status: string | null;
+};
+
 export type JobProgress = {
   totalFiles: number;
   completedFiles: number;
@@ -97,6 +109,8 @@ export const notes = pgTable(
     // Pipeline state.
     status: text("status").$type<NoteStatus>().notNull().default("uploaded"),
     gnaniJobId: text("gnani_job_id"),
+    /** Every provider job for this recording, one per slice, in order. */
+    jobs: jsonb("jobs").$type<SliceJob[]>(),
     gnaniFileId: text("gnani_file_id"),
     gnaniStatus: text("gnani_status"),
     progress: jsonb("progress").$type<JobProgress>(),
