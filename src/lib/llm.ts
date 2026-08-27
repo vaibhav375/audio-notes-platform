@@ -10,11 +10,18 @@ import { env } from "@/lib/env";
 
 export class LlmError extends Error {
   readonly retryable: boolean;
+  /** Set when the service named a wait short enough to sit out inline. */
+  readonly retryAfterSeconds: number | null;
 
-  constructor(message: string, retryable = false) {
+  constructor(
+    message: string,
+    retryable = false,
+    retryAfterSeconds: number | null = null,
+  ) {
     super(message);
     this.name = "LlmError";
     this.retryable = retryable;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -51,6 +58,21 @@ export type SummaryResult = {
   model: string;
 };
 
+/**
+ * Rate-limit responses name the wait in their message ("try again in 23.8275s").
+ * Honouring it turns a hard failure into a pause, which matters on a free tier
+ * with a low tokens-per-minute ceiling.
+ */
+function retryAfterSeconds(message: string): number | null {
+  const match = /try again in ([\d.]+)\s*s/i.exec(message);
+  if (!match) return null;
+  const seconds = Number.parseFloat(match[1]);
+  return Number.isFinite(seconds) ? seconds : null;
+}
+
+/** Leaves room inside the platform's function timeout for the retried call. */
+const MAX_INLINE_WAIT_SECONDS = 25;
+
 export async function summariseTranscript(
   transcript: string,
 ): Promise<SummaryResult> {
@@ -68,6 +90,22 @@ export async function summariseTranscript(
       ? `${trimmed.slice(0, MAX_TRANSCRIPT_CHARS)}\n\n[transcript truncated for length]`
       : trimmed;
 
+  try {
+    return await callOnce(input);
+  } catch (error) {
+    // One inline retry, but only when the service told us how long to wait and
+    // the wait fits inside the request budget.
+    if (error instanceof LlmError && error.retryAfterSeconds != null) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, error.retryAfterSeconds! * 1000 + 500),
+      );
+      return callOnce(input);
+    }
+    throw error;
+  }
+}
+
+async function callOnce(input: string): Promise<SummaryResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60_000);
 
@@ -114,9 +152,11 @@ export async function summariseTranscript(
     } catch {
       // Keep the raw body excerpt.
     }
+    const wait = response.status === 429 ? retryAfterSeconds(detail) : null;
     throw new LlmError(
       `Summarisation failed (HTTP ${response.status}): ${detail}`,
       response.status === 429 || response.status >= 500,
+      wait != null && wait <= MAX_INLINE_WAIT_SECONDS ? wait : null,
     );
   }
 

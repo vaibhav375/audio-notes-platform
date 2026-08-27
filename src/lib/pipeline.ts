@@ -31,6 +31,13 @@ export const STALL_WARNING_MS = 5 * 60 * 1000;
 /** Hard ceiling; past this a stuck job is marked failed so it stops polling. */
 export const STALL_FAILURE_MS = 30 * 60 * 1000;
 
+/**
+ * How many times a transient summarisation failure is retried before the note
+ * is marked failed. Free-tier token-per-minute limits are the common cause, and
+ * they clear on their own, so giving up on the first 429 would be wrong.
+ */
+export const MAX_SUMMARY_ATTEMPTS = 6;
+
 async function patch(id: string, values: Partial<Note>): Promise<Note> {
   const [row] = await db()
     .update(notes)
@@ -293,22 +300,71 @@ export async function runSummary(note: Note): Promise<Note> {
     return fail(note.id, "summary", "There is no transcript to summarise.");
   }
 
+  // Claim the attempt. Concurrent pollers both reach this point, and without a
+  // conditional claim the loser can overwrite a good summary with its own
+  // failure. Only the invocation that increments the counter proceeds.
+  const [claimed] = await db()
+    .update(notes)
+    .set({
+      summaryAttempts: note.summaryAttempts + 1,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(notes.id, note.id),
+        eq(notes.status, "summarizing"),
+        eq(notes.summaryAttempts, note.summaryAttempts),
+      ),
+    )
+    .returning();
+
+  if (!claimed) {
+    // Another invocation is already summarising this note, or it has moved on.
+    return (await getNote(note.id)) ?? note;
+  }
+
   try {
     const { summary } = await summariseTranscript(transcript);
-    return patch(note.id, {
-      summary,
-      status: "completed",
-      errorMessage: null,
-      failureStage: null,
-    });
+
+    const [completed] = await db()
+      .update(notes)
+      .set({
+        summary,
+        status: "completed",
+        errorMessage: null,
+        failureStage: null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(notes.id, note.id), eq(notes.status, "summarizing")))
+      .returning();
+
+    return completed ?? (await getNote(note.id)) ?? claimed;
   } catch (error) {
     const message =
-      error instanceof LlmError
-        ? error.message
-        : error instanceof Error
-          ? error.message
-          : "Unknown summarisation error.";
-    return fail(note.id, "summary", message);
+      error instanceof Error ? error.message : "Unknown summarisation error.";
+    const transient =
+      error instanceof LlmError &&
+      error.retryable &&
+      claimed.summaryAttempts < MAX_SUMMARY_ATTEMPTS;
+
+    if (transient) {
+      // Stay in `summarizing` so the next poll picks it up. The note is not
+      // failed — it is waiting out a limit that clears on its own.
+      return patch(note.id, { errorMessage: message });
+    }
+
+    const [failed] = await db()
+      .update(notes)
+      .set({
+        status: "failed",
+        failureStage: "summary",
+        errorMessage: message,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(notes.id, note.id), eq(notes.status, "summarizing")))
+      .returning();
+
+    return failed ?? (await getNote(note.id)) ?? claimed;
   }
 }
 

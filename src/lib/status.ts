@@ -89,7 +89,11 @@ export function statusDetail(note: NoteView): string | null {
       }
       return "Gnani is transcribing the audio. This runs in the background — you can leave this page.";
     case "summarizing":
-      return "Transcript stored. Generating the summary.";
+      // A message on a note that has not failed means a transient error is
+      // being waited out rather than surfaced as a dead end.
+      return note.errorMessage
+        ? "Transcript stored. The summarisation service is rate limiting us; retrying automatically."
+        : "Transcript stored. Generating the summary.";
     default:
       return null;
   }

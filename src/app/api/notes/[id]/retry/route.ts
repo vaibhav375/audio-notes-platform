@@ -40,6 +40,7 @@ export async function POST(_request: Request, context: Context): Promise<Respons
           status: "summarizing",
           errorMessage: null,
           failureStage: null,
+          summaryAttempts: 0,
           updatedAt: new Date(),
         })
         .where(eq(notes.id, id))
@@ -58,6 +59,7 @@ export async function POST(_request: Request, context: Context): Promise<Respons
         progress: null,
         errorMessage: null,
         failureStage: null,
+        summaryAttempts: 0,
         lastPolledAt: null,
         createdAt: new Date(),
         updatedAt: new Date(),
