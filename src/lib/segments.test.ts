@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normaliseSegments } from "@/lib/pipeline";
+import { normaliseSegments, stitch } from "@/lib/pipeline";
 
 describe("segment normalisation", () => {
   it("keeps only the fields the app uses", () => {
@@ -64,5 +64,31 @@ describe("segment normalisation", () => {
     expect(normaliseSegments(null)).toBeNull();
     expect(normaliseSegments([])).toBeNull();
     expect(normaliseSegments("nope")).toBeNull();
+  });
+});
+
+describe("segment identity", () => {
+  it("renumbers segments even when the provider reuses one id", () => {
+    // This provider returns segment_id 0 for every segment, so ids arriving
+    // from it are not identities and must not be treated as such.
+    const raw = [
+      { segment_id: 0, start_time: 0, end_time: 1, text: "a" },
+      { segment_id: 0, start_time: 1, end_time: 2, text: "b" },
+      { segment_id: 0, start_time: 2, end_time: 3, text: "c" },
+    ];
+    const { segments } = stitch([{ full_transcript: "a b c", segments: raw }], [0]);
+    expect(segments.map((s) => s.segment_id)).toEqual([0, 1, 2]);
+  });
+
+  it("keeps ids unique across stitched slices", () => {
+    const slice = {
+      full_transcript: "x y",
+      segments: [
+        { segment_id: 0, start_time: 0, end_time: 1, text: "x" },
+        { segment_id: 0, start_time: 1, end_time: 2, text: "y" },
+      ],
+    };
+    const { segments } = stitch([slice, slice, slice], [0, 300, 600]);
+    expect(new Set(segments.map((s) => s.segment_id)).size).toBe(segments.length);
   });
 });

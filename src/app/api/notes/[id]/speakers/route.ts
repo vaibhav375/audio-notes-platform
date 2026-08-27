@@ -19,19 +19,19 @@ type Context = { params: Promise<{ id: string }> };
 export async function PATCH(request: Request, context: Context): Promise<Response> {
   const { id } = await context.params;
 
-  let body: { fromSegmentId?: unknown; speakerId?: unknown };
+  let body: { fromIndex?: unknown; speakerId?: unknown };
   try {
     body = (await request.json()) as typeof body;
   } catch {
     return Response.json({ error: "Malformed request body." }, { status: 400 });
   }
 
-  const fromSegmentId = Number(body.fromSegmentId);
+  const fromIndex = Number(body.fromIndex);
   const speakerId = Number(body.speakerId);
 
-  if (!Number.isFinite(fromSegmentId) || (speakerId !== 1 && speakerId !== 2)) {
+  if (!Number.isInteger(fromIndex) || fromIndex < 0 || (speakerId !== 1 && speakerId !== 2)) {
     return Response.json(
-      { error: "fromSegmentId must be a number and speakerId must be 1 or 2." },
+      { error: "fromIndex must be a non-negative integer and speakerId must be 1 or 2." },
       { status: 400 },
     );
   }
@@ -47,7 +47,9 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
     );
   }
 
-  const anchor = note.segments.find((s) => s.segment_id === fromSegmentId);
+  // Addressed by position rather than by segment_id: this provider returns the
+  // same segment_id for every segment, so the id is not an identity.
+  const anchor = note.segments[fromIndex];
   if (!anchor) {
     return Response.json({ error: "No such segment." }, { status: 404 });
   }
@@ -55,8 +57,8 @@ export async function PATCH(request: Request, context: Context): Promise<Respons
   // Carry the correction forward across the run the provider labelled the same
   // way, which is the span that shares the mistake.
   const previous = anchor.speaker_id;
-  const updated = note.segments.map((segment) =>
-    segment.segment_id >= fromSegmentId && segment.speaker_id === previous
+  const updated = note.segments.map((segment, index) =>
+    index >= fromIndex && segment.speaker_id === previous
       ? { ...segment, speaker_id: speakerId }
       : segment,
   );

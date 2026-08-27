@@ -194,7 +194,9 @@ export function TranscriptPlayer({
         await fetch(`/api/notes/${noteId}/speakers`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fromSegmentId: from.segment_id, speakerId: next }),
+          // Addressed by position, not by segment_id: the provider returns the
+          // same id for every segment, so ids are not identities here.
+          body: JSON.stringify({ fromIndex: index, speakerId: next }),
         });
       } catch {
         setSegments(segments); // Put it back; the change did not stick.
@@ -249,7 +251,7 @@ export function TranscriptPlayer({
           >
             {segments!.map((segment, index) => (
               <li
-                key={segment.segment_id}
+                key={index}
                 className={`segment${index === activeIndex ? " segment--active" : ""}`}
               >
                 <button
