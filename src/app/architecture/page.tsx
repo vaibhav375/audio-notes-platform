@@ -118,7 +118,7 @@ const IMPROVEMENTS: { title: string; body: string }[] = [
   {
     title: "Splitting on silence rather than on the clock",
     body:
-      "Slices are cut at fixed intervals, so a boundary can land mid-sentence and the two halves are transcribed without each other's context. Detecting a quiet moment near each boundary, or overlapping slices slightly and reconciling the seam, would remove the occasional dropped word at a join.",
+      "Slices are cut at fixed intervals, so a boundary can land mid-sentence and the two halves are transcribed without each other's context. Measured, that costs about five per cent of the transcript — 2,169 characters across five slices against 2,286 for the same recording whole. Cutting at a quiet moment near each boundary, or overlapping slices and reconciling the seam, would close most of that gap.",
   },
   {
     title: "Confidence-aware summarisation",
@@ -254,11 +254,14 @@ export default function ArchitecturePage() {
         </p>
         <h3 className="doc__h3">When the batch API is unavailable</h3>
         <p className="doc__p">
-          The provider&apos;s batch pipeline stopped starting jobs during
-          development: a file uploads, sits <code>QUEUED</code>, and the job is
-          cancelled with <code>ReadTimeout</code> without ever starting. The
-          account was healthy throughout and the synchronous endpoint answered
-          normally, so this was one half of their service being unwell.
+          The provider&apos;s batch pipeline stopped starting jobs for about a
+          day during development: a file would upload, sit <code>QUEUED</code>,
+          and the job would be cancelled with <code>ReadTimeout</code> without
+          ever starting. The account was healthy throughout — a second API key
+          behaved identically, and the synchronous endpoint answered in about a
+          second — so this was one half of their service being unwell. It has
+          since recovered, and the fallback below is what kept the app usable in
+          the meantime.
         </p>
         <p className="doc__p">
           Slicing turns out to be the way around that too. The synchronous
@@ -272,8 +275,8 @@ export default function ArchitecturePage() {
         </p>
         <p className="doc__p">
           <strong>The fallback is genuinely worse, and the app says so.</strong>{" "}
-          On the same two-and-a-half minute recording, batch produced about 1,600
-          characters of transcript and the fallback about 450. Short slices with
+          On the same two-and-a-half minute recording, batch produced 1,509
+          characters of transcript and the fallback 454. Short slices with
           hard cuts do not suit this model: a slice that opens mid-pause returns
           nothing at all. Starting each slice at its first sound recovered some
           of that, and the remainder is a real limitation rather than a bug to be
@@ -283,42 +286,35 @@ export default function ArchitecturePage() {
           outage itself.
         </p>
 
-        <h3 className="doc__h3">One job per slice, and a note on why</h3>
+        <h3 className="doc__h3">One job, every slice</h3>
         <p className="doc__p">
-          Each slice is submitted as <strong>its own job</strong>, rather than
-          one job holding every slice as the API&apos;s hundred-files-per-job
-          limit would allow. Single-file jobs are the shape that has been
-          reliable throughout, so they are the unit.
+          All the slices of a recording go into a single batch job, which is what
+          the API&apos;s hundred-files-per-job limit is for. The provider returns
+          them in no particular order — a five slice job came back as 5, 1, 3, 2,
+          4 — so files are matched back to the slices they came from by the path
+          echoed in the response, which is the full URL for a cloud-storage job
+          and the bare filename for an uploaded one.
         </p>
         <p className="doc__p">
-          The honest version of how that decision was reached: multi-file jobs
-          failed repeatedly with <code>ReadTimeout</code> during testing, and the
-          apparent conclusion was that the documented behaviour simply did not
-          work. It later turned out the account was <strong>rate limited</strong>
-          — a start call returned <code>RATE_LIMITED</code> outright — and single
-          file jobs were failing by then too. So the multi-file result is not a
-          finding, it is a measurement taken through a confound, and it is
-          recorded here as such rather than dressed up as an API quirk.
+          Getting that wrong is quiet rather than loud: the transcript still
+          renders, it is simply shuffled, and every timestamp points at the wrong
+          moment. It is covered by tests for both path shapes.
         </p>
         <p className="doc__p">
-          What the episode did establish is that this API answers pressure with
-          <code>START_FAILED</code> and a read timeout, which says nothing about
-          the audio. Treating that as a terminal error told users their file was
-          corrupt when it was not. It is now treated as transient: the job is
-          resubmitted, up to four times, ninety seconds apart, and only a
-          genuinely non-transient reason fails the note.
-        </p>
-        <p className="doc__p">
-          The provider returns a transcript per slice, with timings relative to
-          that slice. Each is shifted by where its slice starts before the
-          transcript is stored, so a click on a line two hours in seeks to the
-          right second. The player follows the same map, switching source as
-          playback crosses a boundary.
+          There is an honest detour worth recording here. While the batch API was
+          down, multi-file jobs failed every time they were tried, and the
+          conclusion drawn was that the documented behaviour did not work — so
+          each slice was given its own job. That conclusion was wrong. Single
+          file jobs were failing by then too; the measurement was taken through
+          an outage. Once the service recovered, a five file job completed on the
+          first attempt. The design went back to one job, and the episode is left
+          here because a confident conclusion drawn from a confounded measurement
+          is the more useful thing to remember.
         </p>
 
         <div className="figures">
           <Figure value="~1 min" label="of 44.1 kHz stereo WAV fits in 10 MB" muted />
-          <Figure value="5 min" label="per slice, always at full 64 kbps" />
+          <Figure value="25 sec" label="per slice, always at full 64 kbps" />
           <Figure value="90 min" label="ceiling, now set by browser memory" muted />
         </div>
 
