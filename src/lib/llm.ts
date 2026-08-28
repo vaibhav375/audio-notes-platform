@@ -72,6 +72,8 @@ Concrete follow-ups or decisions, as bullets. Write "None identified." if there 
 
 Rules:
 - Use only what the transcript actually says. Never invent details, names, numbers or outcomes.
+- Do not attribute intentions, apologies, agreement, emphasis or feelings to a speaker unless the transcript states them. Report what was said, not how you imagine it was meant.
+- Do not invert a claim while condensing it. If a speaker says something was announced in advance, do not imply they failed to deliver it.
 - Automatic transcription makes mistakes, especially with numbers, names and units; if a passage is garbled or a figure looks implausible, summarise around it rather than repeating it as fact.
 - Do not add a preamble, a closing remark, or any section beyond the three above.`;
 
