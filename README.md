@@ -106,6 +106,18 @@ Open <http://localhost:3000>.
 npm test
 ```
 
+Auditing summaries against their transcripts needs a running app and an LLM key:
+
+```bash
+npm run audit:summaries -- --url https://your-deployment.vercel.app
+```
+
+It checks each summary's structure, then has a model read the transcript and the
+summary and report claims the transcript does not support. The judge defaults to
+a different model family from the one that writes the summaries — a model
+grading its own output is a weak signal, agreement between two families is a
+much stronger one.
+
 Covers the logic that carries the risk and needs no network: chunk planning,
 transcript stitching, subtitle timing, segment parsing, summarisation passes and
 search-excerpt handling.

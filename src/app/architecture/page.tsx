@@ -121,6 +121,11 @@ const IMPROVEMENTS: { title: string; body: string }[] = [
       "Slices are cut at fixed intervals, so a boundary can land mid-sentence and the two halves are transcribed without each other's context. Measured, that costs about five per cent of the transcript — 2,169 characters across five slices against 2,286 for the same recording whole. Cutting at a quiet moment near each boundary, or overlapping slices and reconciling the seam, would close most of that gap.",
   },
   {
+    title: "Summaries that cite the transcript",
+    body:
+      "Summaries are audited by a judge model from a different family to the one that writes them, and the current library comes back with no unsupported claims and two of twelve showing minor interpretive drift — a summary adding a nuance the speaker did not quite state. Having the model quote the span of transcript behind each bullet would make drift visible in the interface rather than only in an audit, and would let a reader check a claim in one click.",
+  },
+  {
     title: "Confidence-aware summarisation",
     body:
       "The model is told to distrust implausible figures, which is a blunt instrument. Per-word confidence from the ASR would let low-confidence spans be marked in the transcript and withheld from the summary, instead of relying on the model to notice.",

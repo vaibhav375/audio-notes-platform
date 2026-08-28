@@ -10,7 +10,8 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "audit:summaries": "node scripts/audit-summaries.mjs"
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",
