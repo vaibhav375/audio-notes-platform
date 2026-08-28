@@ -27,9 +27,11 @@ be reopened at any time.
 - **Nine Indian languages**, all verified against the live API: Hindi, Kannada,
   Tamil, Telugu, Malayalam, Marathi, Bengali, Gujarati and Indian English.
   Transcripts keep their own script; summaries come back in English.
-- **Nine Indian languages**, each verified against the live API: Hindi, Kannada,
-  Tamil, Telugu, Malayalam, Marathi, Bengali, Gujarati and Indian English.
-  Transcripts keep their own script; summaries come back in English.
+- **Nine language codes**, each verified against the live API: Indian English,
+  Hindi, Kannada, Tamil, Telugu, Malayalam, Marathi and Bengali (India and
+  Bangladesh). Transcripts keep their own script; summaries come back in
+  English. Gujarati is not offered — the batch API rejects it, so it would only
+  ever work on the fallback path.
 - **Optional two-speaker separation** for interviews and support calls, with
   labels you can correct when the provider gets them wrong.
 - **Long recordings are split into slices** and submitted as one multi-file job,

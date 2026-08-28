@@ -395,10 +395,20 @@ export default function ArchitecturePage() {
         <h3 className="doc__h3">Nine languages, verified</h3>
         <p className="doc__p">
           The language chosen at upload is passed straight through to the ASR
-          provider, and all nine it supports have been tested against the live
-          API with real spoken-word recordings rather than taken on trust:
-          Hindi, Kannada, Tamil, Telugu, Malayalam, Marathi, Bengali, Gujarati
-          and Indian English. Each returns text in its own script.
+          provider, and every one offered has been tested against the live API
+          with real spoken-word recordings rather than taken on trust: Hindi,
+          Kannada, Tamil, Telugu, Malayalam, Marathi, Bengali and Indian
+          English. Each returns text in its own script.
+        </p>
+        <p className="doc__p">
+          The list is taken from the API&apos;s own error response, not from its
+          documentation. <strong>Gujarati is deliberately not offered.</strong>{" "}
+          The synchronous endpoint transcribes it happily, which is how it came
+          to be on the list in the first place, but the batch API rejects{" "}
+          <code>gu-IN</code> outright — so every Gujarati upload was quietly
+          taking the degraded fallback path while looking like a first-class
+          choice. A language that only half works is worse than one that is
+          absent.
         </p>
         <p className="doc__p">
           That is why search uses a script-agnostic text-search configuration,
