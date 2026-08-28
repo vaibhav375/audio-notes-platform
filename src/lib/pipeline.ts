@@ -571,7 +571,9 @@ async function pollTranscription(note: Note): Promise<Note> {
     const perJob = await Promise.all(
       sliceJobs.map((slice) => getJobFiles(slice.jobId)),
     );
-    files = perJob.map((entries) => entries[0]).filter(Boolean);
+    // A job may hold many files, so take all of them and put them back into
+    // recording order — the API returns them in no particular order.
+    files = orderFiles(perJob.flat(), note);
   } catch (error) {
     if (error instanceof GnaniError && error.retryable) return expireIfStuck(note);
     throw error;
@@ -585,7 +587,6 @@ async function pollTranscription(note: Note): Promise<Note> {
     );
   }
 
-  // One file per slice, gathered in slice order already.
   const ordered = files;
 
   const missing = ordered.find((file) => !file.transcript_url);
@@ -765,6 +766,41 @@ export async function runSummary(note: Note): Promise<Note> {
  * Keeps only the fields the UI uses. Provider payloads carry several keys that
  * come back null on every request, and storing them would bloat every row.
  */
+/**
+ * Puts the provider's files back into recording order.
+ *
+ * They come back in no particular order — a five file job returned its slices
+ * as 5, 1, 3, 2, 4 — so without this the stitched transcript would be shuffled
+ * and every timestamp wrong. Files are matched to the uploaded slices by the
+ * path the provider echoes back, which is the full URL for a cloud-storage job
+ * and the bare filename for an uploaded one, so both are indexed.
+ */
+export function orderFiles(files: GnaniJobFile[], note: Note): GnaniJobFile[] {
+  const parts = note.parts?.length
+    ? [...note.parts].sort((a, b) => a.offsetSeconds - b.offsetSeconds)
+    : [];
+
+  if (parts.length === 0 || files.length <= 1) return files;
+
+  const rank = new Map<string, number>();
+  parts.forEach((part, index) => {
+    for (const key of [part.url, basename(part.url), basename(part.pathname)]) {
+      if (key && !rank.has(key)) rank.set(key, index);
+    }
+  });
+
+  const rankOf = (file: GnaniJobFile): number => {
+    const path = file.original_path ?? "";
+    return rank.get(path) ?? rank.get(basename(path)) ?? Number.MAX_SAFE_INTEGER;
+  };
+
+  return [...files].sort((a, b) => rankOf(a) - rankOf(b));
+}
+
+function basename(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
 /** Start time of each file within the whole recording. */
 function offsetsFor(files: GnaniJobFile[], note: Note): number[] {
   const parts = note.parts?.length
